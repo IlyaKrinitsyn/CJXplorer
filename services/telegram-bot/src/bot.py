@@ -83,12 +83,9 @@ def _kb_after_screenshot(chat_id: int) -> InlineKeyboardMarkup:
 
 
 KB_NEW_SESSION = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("🔄 Новая оценка", callback_data="reset"),
-        InlineKeyboardButton("🧹 Очистить чат", callback_data="clear_chat"),
-    ]
+    [InlineKeyboardButton("🔄 Новая оценка", callback_data="new_session")]
 ])
-"""Клавиатура после завершения оценки: Новая оценка / Очистить чат."""
+"""Клавиатура после завершения оценки."""
 
 
 def _kb_model_picker() -> InlineKeyboardMarkup:
@@ -321,6 +318,17 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _edit_status(
             chat_id, _status_text(chat_id),
             context, reply_markup=_kb_after_screenshot(chat_id),
+        )
+
+    elif query.data == "new_session":
+        SESSIONS.pop(chat_id, None)
+        STATUS_MESSAGES.pop(chat_id, None)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await context.bot.send_message(
+            chat_id, "Отправляй скриншоты нового клиентского пути."
         )
 
     elif query.data == "back_to_status":

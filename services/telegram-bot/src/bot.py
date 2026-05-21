@@ -10,7 +10,7 @@ from telegram.ext import (
     filters,
 )
 
-from .config import OPENAI_MODEL, TELEGRAM_BOT_TOKEN
+from .config import AVAILABLE_MODELS, DEFAULT_MODEL, TELEGRAM_BOT_TOKEN
 from .eval_agent import evaluate_screenshots
 
 logging.basicConfig(
@@ -21,13 +21,31 @@ logger = logging.getLogger(__name__)
 
 SESSIONS: dict[int, list[bytes]] = {}
 STATUS_MESSAGES: dict[int, int] = {}
+USER_MODELS: dict[int, str] = {}
 
-KB_AFTER_SCREENSHOT = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("✅ Оценить", callback_data="evaluate"),
-        InlineKeyboardButton("🗑 Сбросить", callback_data="reset"),
-    ]
-])
+
+def _get_model(chat_id: int) -> str:
+    return USER_MODELS.get(chat_id, DEFAULT_MODEL)
+
+
+def _model_label(model_id: str) -> str:
+    return AVAILABLE_MODELS.get(model_id, model_id)
+
+
+def _kb_after_screenshot(chat_id: int) -> InlineKeyboardMarkup:
+    model = _get_model(chat_id)
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Оценить", callback_data="evaluate"),
+            InlineKeyboardButton("🗑 Сбросить", callback_data="reset"),
+        ],
+        [
+            InlineKeyboardButton(
+                f"🔀 Модель: {_model_label(model)}", callback_data="pick_model"
+            ),
+        ],
+    ])
+
 
 KB_NEW_SESSION = InlineKeyboardMarkup([
     [
@@ -37,9 +55,17 @@ KB_NEW_SESSION = InlineKeyboardMarkup([
 ])
 
 
+def _kb_model_picker() -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(label, callback_data=f"model:{model_id}")]
+        for model_id, label in AVAILABLE_MODELS.items()
+    ]
+    buttons.append([InlineKeyboardButton("« Назад", callback_data="back_to_status")])
+    return InlineKeyboardMarkup(buttons)
+
+
 async def _edit_status(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE,
                        reply_markup=None, parse_mode=None) -> None:
-    """Edit the status message or create a new one if it doesn't exist."""
     if chat_id in STATUS_MESSAGES:
         try:
             await context.bot.edit_message_text(
@@ -56,6 +82,12 @@ async def _edit_status(chat_id: int, text: str, context: ContextTypes.DEFAULT_TY
         chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode
     )
     STATUS_MESSAGES[chat_id] = msg.message_id
+
+
+def _status_text(chat_id: int) -> str:
+    count = len(SESSIONS.get(chat_id, []))
+    model = _model_label(_get_model(chat_id))
+    return f"📎 Загружено скриншотов: {count}\n🤖 Модель: {model}"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -78,10 +110,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     photo = update.message.photo[-1]
     file = await photo.get_file()
     data = await file.download_as_bytearray()
-    count = await _save_screenshot(chat_id, bytes(data))
+    await _save_screenshot(chat_id, bytes(data))
     await _edit_status(
-        chat_id, f"📎 Загружено скриншотов: {count}",
-        context, reply_markup=KB_AFTER_SCREENSHOT,
+        chat_id, _status_text(chat_id),
+        context, reply_markup=_kb_after_screenshot(chat_id),
     )
 
 
@@ -94,10 +126,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     chat_id = update.effective_chat.id
     file = await doc.get_file()
     data = await file.download_as_bytearray()
-    count = await _save_screenshot(chat_id, bytes(data))
+    await _save_screenshot(chat_id, bytes(data))
     await _edit_status(
-        chat_id, f"📎 Загружено скриншотов: {count}",
-        context, reply_markup=KB_AFTER_SCREENSHOT,
+        chat_id, _status_text(chat_id),
+        context, reply_markup=_kb_after_screenshot(chat_id),
     )
 
 
@@ -110,20 +142,23 @@ async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
+    model = _get_model(chat_id)
+    label = _model_label(model)
+
     await _edit_status(
         chat_id,
-        f"⏳ Анализирую клиентский путь из {len(screenshots)} скриншотов…",
+        f"⏳ Анализирую {len(screenshots)} скриншотов на {label}…",
         context,
     )
 
     try:
-        result = await evaluate_screenshots(screenshots)
+        result = await evaluate_screenshots(screenshots, model)
     except Exception as e:
         logger.error(f"Evaluation failed: {e}")
         await _edit_status(chat_id, f"Ошибка при анализе: {e}", context)
         return
 
-    footer = f"\n\n🤖 <i>Модель: {OPENAI_MODEL}</i>"
+    footer = f"\n\n🤖 <i>Модель: {label}</i>"
     result_with_footer = result + footer
 
     if len(result_with_footer) <= 4096:
@@ -132,7 +167,6 @@ async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None
             reply_markup=KB_NEW_SESSION, parse_mode="HTML",
         )
     else:
-        # First chunk edits the status message, rest are new messages
         chunks = [result[i : i + 4096] for i in range(0, len(result), 4096)]
         for i, chunk in enumerate(chunks):
             is_last = i == len(chunks) - 1
@@ -187,12 +221,34 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if query.data == "evaluate":
         await _do_evaluate(chat_id, context)
+
     elif query.data == "reset":
         SESSIONS.pop(chat_id, None)
         STATUS_MESSAGES.pop(chat_id, None)
         await query.message.reply_text("Скриншоты очищены. Отправляй новые.")
+
     elif query.data == "clear_chat":
         await _clear_chat(chat_id, context)
+
+    elif query.data == "pick_model":
+        await _edit_status(
+            chat_id, "Выбери модель для анализа:",
+            context, reply_markup=_kb_model_picker(),
+        )
+
+    elif query.data.startswith("model:"):
+        model_id = query.data.removeprefix("model:")
+        USER_MODELS[chat_id] = model_id
+        await _edit_status(
+            chat_id, _status_text(chat_id),
+            context, reply_markup=_kb_after_screenshot(chat_id),
+        )
+
+    elif query.data == "back_to_status":
+        await _edit_status(
+            chat_id, _status_text(chat_id),
+            context, reply_markup=_kb_after_screenshot(chat_id),
+        )
 
 
 def main() -> None:

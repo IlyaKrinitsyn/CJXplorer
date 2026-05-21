@@ -1,18 +1,13 @@
 import base64
 from openai import AsyncOpenAI
 
-from .config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
+from .config import LLM_API_KEY, LLM_BASE_URL
 from .prompts import SYSTEM_PROMPT
 
-client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
 
 
-async def evaluate_screenshots(screenshots: list[bytes]) -> str:
-    """
-    Evaluates a complete customer journey from a sequence of screenshots.
-    Screenshots should be in order of the CJ steps.
-    Returns the evaluation text.
-    """
+async def evaluate_screenshots(screenshots: list[bytes], model: str) -> str:
     user_content = [
         {
             "type": "text",
@@ -24,7 +19,7 @@ async def evaluate_screenshots(screenshots: list[bytes]) -> str:
         }
     ]
 
-    for i, screenshot in enumerate(screenshots, 1):
+    for screenshot in screenshots:
         b64 = base64.b64encode(screenshot).decode("utf-8")
         user_content.append(
             {
@@ -37,7 +32,7 @@ async def evaluate_screenshots(screenshots: list[bytes]) -> str:
         )
 
     response = await client.chat.completions.create(
-        model=OPENAI_MODEL,
+        model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_content},

@@ -1,0 +1,81 @@
+---
+description: Project context and conventions for CJXplorer
+globs:
+alwaysApply: true
+---
+
+# CJXplorer — Project Context
+
+## What is this project?
+
+CJXplorer is an agent-based service for researching and evaluating Customer Journeys (CJ) using a criteria-based evaluation model created by CX BP team.
+
+Currently CJ analysis is done manually — it's expensive and doesn't cover the full scope of journeys. This service automates the process.
+
+## Key User Stories
+
+1. User uploads CJ screenshots → agent evaluates via criteria model
+2. User specifies CJ + target apps/sites → agent autonomously navigates and evaluates (OpenClaw for mobile, Playwright for web)
+3. User provides Pixso/Figma mockup screens (static, no prototypes) → agent evaluates CJ via criteria model
+
+## Target Users
+
+CX BP, product managers, UX researchers, designers, business analysts.
+
+## Architecture Principles
+
+- Modular: multiple loosely-coupled services/agents/tools that can be extended independently
+- LLM-agnostic: services should not hard-depend on a specific model
+- Simplicity-first stack
+- Each module can use different LLMs/tools as appropriate
+
+## Autonomous Navigation Stack
+
+- Mobile (iOS/Android): OpenClaw (https://docs.openclaw.ai)
+- Web: Playwright
+
+## Current Phase
+
+Architecture design — no implementation yet.
+
+## Conventions
+
+- Architecture docs go in `docs/architecture/`
+- User story details go in `docs/user-stories/`
+- Knowledge base (criteria model, heuristics) goes in `docs/knowledge-base/`
+- All docs are in Russian unless specified otherwise
+- Diagrams use Mermaid format where possible
+
+## Deployment & Integration
+
+- External perimeter: cloud/remote server — main logic, autonomous navigation, evaluation
+- Internal perimeter (bank): mirrored agent logic on bank's internal LLM, works with mockups
+- Bridge: file-based transfer between perimeters (reports go in, mockup analysis happens inside)
+- Telegram bot as entry point (simplified output format)
+- Web dashboard (full output format) — may exist in both perimeters
+- History of evaluations stored long-term (screenshots, recordings, reports)
+
+## Output Format
+
+- Telegram: simplified report
+- Dashboard/service: full interactive report
+- Export: PDF, HTML, markdown
+
+## Learning Loop
+
+- Human verifies selected good/bad scenarios
+- Cumulative verified base used for agent improvement (fine-tuning / few-shot)
+- Long-term goal: autonomous agent that can CREATE customer journeys (not just evaluate)
+
+## Competitor Analysis
+
+- Agent researches multiple apps/sites in parallel for the same CJ
+- Produces comparative evaluation across all targets
+
+## CRITICAL: raw/ folder
+
+Files in `raw/` are source materials. NEVER modify them without explicit user confirmation.
+
+## Key Decisions (ADR)
+
+_None yet — pending initial architecture design._

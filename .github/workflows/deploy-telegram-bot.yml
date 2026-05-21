@@ -1,0 +1,27 @@
+name: Deploy Telegram Bot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "services/telegram-bot/**"
+
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VDS_HOST }}
+          username: ${{ secrets.VDS_USER }}
+          key: ${{ secrets.VDS_SSH_KEY }}
+          script: |
+            cd ~/CJXplorer
+            git pull origin main
+            cd services/telegram-bot
+            docker compose up -d --build --force-recreate
+            docker image prune -f

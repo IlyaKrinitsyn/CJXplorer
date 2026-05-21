@@ -24,6 +24,21 @@ STATUS_MESSAGES: dict[int, int] = {}
 USER_MODELS: dict[int, str] = {}
 
 
+def _pluralize(n: int, one: str, few: str, many: str) -> str:
+    if 11 <= n % 100 <= 19:
+        return f"{n} {many}"
+    mod = n % 10
+    if mod == 1:
+        return f"{n} {one}"
+    if 2 <= mod <= 4:
+        return f"{n} {few}"
+    return f"{n} {many}"
+
+
+def _screenshots_label(count: int) -> str:
+    return _pluralize(count, "скриншот", "скриншота", "скриншотов")
+
+
 def _get_model(chat_id: int) -> str:
     return USER_MODELS.get(chat_id, DEFAULT_MODEL)
 
@@ -64,30 +79,51 @@ def _kb_model_picker() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+async def _send_or_edit(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE,
+                       reply_markup=None, parse_mode=None, edit: bool = True) -> None:
+    """Try to edit status message; on any failure (including bad HTML) retry without parse_mode."""
+    from telegram.error import BadRequest
+
+    for mode in ([parse_mode, None] if parse_mode else [None]):
+        if edit and chat_id in STATUS_MESSAGES:
+            try:
+                await context.bot.edit_message_text(
+                    text,
+                    chat_id=chat_id,
+                    message_id=STATUS_MESSAGES[chat_id],
+                    reply_markup=reply_markup,
+                    parse_mode=mode,
+                )
+                return
+            except BadRequest as e:
+                if "can't parse entities" in str(e).lower() and mode is not None:
+                    continue
+            except Exception:
+                break
+        break
+
+    for mode in ([parse_mode, None] if parse_mode else [None]):
+        try:
+            msg = await context.bot.send_message(
+                chat_id, text, reply_markup=reply_markup, parse_mode=mode
+            )
+            STATUS_MESSAGES[chat_id] = msg.message_id
+            return
+        except BadRequest as e:
+            if "can't parse entities" in str(e).lower() and mode is not None:
+                continue
+            raise
+
+
 async def _edit_status(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE,
                        reply_markup=None, parse_mode=None) -> None:
-    if chat_id in STATUS_MESSAGES:
-        try:
-            await context.bot.edit_message_text(
-                text,
-                chat_id=chat_id,
-                message_id=STATUS_MESSAGES[chat_id],
-                reply_markup=reply_markup,
-                parse_mode=parse_mode,
-            )
-            return
-        except Exception:
-            pass
-    msg = await context.bot.send_message(
-        chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode
-    )
-    STATUS_MESSAGES[chat_id] = msg.message_id
+    await _send_or_edit(chat_id, text, context, reply_markup, parse_mode, edit=True)
 
 
 def _status_text(chat_id: int) -> str:
     count = len(SESSIONS.get(chat_id, []))
     model = _model_label(_get_model(chat_id))
-    return f"📎 Загружено скриншотов: {count}\n🤖 Модель: {model}"
+    return f"📎 Загружено: {_screenshots_label(count)}\n🤖 Модель: {model}"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -147,7 +183,7 @@ async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None
 
     await _edit_status(
         chat_id,
-        f"⏳ Анализирую {len(screenshots)} скриншотов на {label}…",
+        f"⏳ Анализирую {_screenshots_label(len(screenshots))} на {label}…",
         context,
     )
 
@@ -178,12 +214,11 @@ async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None
                     reply_markup=KB_NEW_SESSION if is_last else None,
                 )
             else:
-                msg = await context.bot.send_message(
-                    chat_id, chunk, parse_mode="HTML",
+                await _send_or_edit(
+                    chat_id, chunk, context, parse_mode="HTML",
                     reply_markup=KB_NEW_SESSION if is_last else None,
+                    edit=False,
                 )
-                if is_last:
-                    STATUS_MESSAGES[chat_id] = msg.message_id
 
     SESSIONS.pop(chat_id, None)
 

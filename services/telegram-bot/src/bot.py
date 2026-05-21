@@ -1,3 +1,13 @@
+"""
+Telegram-бот CJXplorer.
+
+Принимает скриншоты клиентского пути от пользователя,
+отправляет их на оценку в LLM и возвращает результат.
+
+Весь флоу (загрузка → анализ → результат) происходит
+в одном редактируемом сообщении.
+"""
+
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -20,11 +30,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 SESSIONS: dict[int, list[bytes]] = {}
+"""Хранилище загруженных скриншотов по chat_id."""
+
 STATUS_MESSAGES: dict[int, int] = {}
+"""ID статусного сообщения для каждого чата (используется для edit вместо нового сообщения)."""
+
 USER_MODELS: dict[int, str] = {}
+"""Выбранная модель для каждого чата."""
 
 
 def _pluralize(n: int, one: str, few: str, many: str) -> str:
+    """Склонение существительного по числительному (русский язык)."""
     if 11 <= n % 100 <= 19:
         return f"{n} {many}"
     mod = n % 10
@@ -36,18 +52,22 @@ def _pluralize(n: int, one: str, few: str, many: str) -> str:
 
 
 def _screenshots_label(count: int) -> str:
+    """Возвращает '1 скриншот', '3 скриншота', '5 скриншотов' и т.д."""
     return _pluralize(count, "скриншот", "скриншота", "скриншотов")
 
 
 def _get_model(chat_id: int) -> str:
+    """Возвращает выбранную модель для чата или модель по умолчанию."""
     return USER_MODELS.get(chat_id, DEFAULT_MODEL)
 
 
 def _model_label(model_id: str) -> str:
+    """Возвращает человекочитаемое название модели."""
     return AVAILABLE_MODELS.get(model_id, model_id)
 
 
 def _kb_after_screenshot(chat_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура после загрузки скриншота: Оценить / Сбросить / Сменить модель."""
     model = _get_model(chat_id)
     return InlineKeyboardMarkup([
         [
@@ -68,9 +88,11 @@ KB_NEW_SESSION = InlineKeyboardMarkup([
         InlineKeyboardButton("🧹 Очистить чат", callback_data="clear_chat"),
     ]
 ])
+"""Клавиатура после завершения оценки: Новая оценка / Очистить чат."""
 
 
 def _kb_model_picker() -> InlineKeyboardMarkup:
+    """Клавиатура выбора LLM-модели из списка доступных."""
     buttons = [
         [InlineKeyboardButton(label, callback_data=f"model:{model_id}")]
         for model_id, label in AVAILABLE_MODELS.items()
@@ -80,8 +102,13 @@ def _kb_model_picker() -> InlineKeyboardMarkup:
 
 
 async def _send_or_edit(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE,
-                       reply_markup=None, parse_mode=None, edit: bool = True) -> None:
-    """Try to edit status message; on any failure (including bad HTML) retry without parse_mode."""
+                        reply_markup=None, parse_mode=None, edit: bool = True) -> None:
+    """
+    Отправляет или редактирует сообщение.
+
+    При ошибке парсинга HTML (невалидные теги от LLM) — автоматически
+    повторяет отправку без форматирования.
+    """
     from telegram.error import BadRequest
 
     for mode in ([parse_mode, None] if parse_mode else [None]):
@@ -117,16 +144,19 @@ async def _send_or_edit(chat_id: int, text: str, context: ContextTypes.DEFAULT_T
 
 async def _edit_status(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE,
                        reply_markup=None, parse_mode=None) -> None:
+    """Обновляет статусное сообщение (edit) или создаёт новое, если edit невозможен."""
     await _send_or_edit(chat_id, text, context, reply_markup, parse_mode, edit=True)
 
 
 def _status_text(chat_id: int) -> str:
+    """Формирует текст статусного сообщения: кол-во скриншотов + текущая модель."""
     count = len(SESSIONS.get(chat_id, []))
     model = _model_label(_get_model(chat_id))
     return f"📎 Загружено: {_screenshots_label(count)}\n🤖 Модель: {model}"
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /start — приветствие и инструкция."""
     await update.message.reply_text(
         "Привет! Я оцениваю клиентские пути по критериальной модели CX.\n\n"
         "Отправь скриншоты клиентского пути — по одному или альбомом.\n"
@@ -135,6 +165,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _save_screenshot(chat_id: int, data: bytes) -> int:
+    """Сохраняет скриншот в сессию и возвращает общее кол-во загруженных."""
     if chat_id not in SESSIONS:
         SESSIONS[chat_id] = []
     SESSIONS[chat_id].append(data)
@@ -142,6 +173,7 @@ async def _save_screenshot(chat_id: int, data: bytes) -> int:
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик входящих фото — сохраняет и обновляет статус."""
     chat_id = update.effective_chat.id
     photo = update.message.photo[-1]
     file = await photo.get_file()
@@ -154,6 +186,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик файлов-изображений (несжатые скриншоты)."""
     doc = update.message.document
     if not doc.mime_type or not doc.mime_type.startswith("image/"):
         await update.message.reply_text("Отправь изображение (скриншот экрана).")
@@ -170,6 +203,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Запускает оценку загруженных скриншотов.
+
+    Обновляет статусное сообщение на каждом этапе:
+    загрузка → ожидание → результат.
+    """
     screenshots = SESSIONS.get(chat_id, [])
 
     if not screenshots:
@@ -224,10 +263,12 @@ async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def evaluate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /evaluate — запуск оценки."""
     await _do_evaluate(update.effective_chat.id, context)
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /reset — очистка загруженных скриншотов."""
     chat_id = update.effective_chat.id
     SESSIONS.pop(chat_id, None)
     STATUS_MESSAGES.pop(chat_id, None)
@@ -235,6 +276,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _clear_chat(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удаляет все сообщения бота в чате и сбрасывает сессию."""
     SESSIONS.pop(chat_id, None)
     STATUS_MESSAGES.pop(chat_id, None)
     msg = await context.bot.send_message(chat_id, "🧹 Чат очищен. Отправляй скриншоты.")
@@ -246,10 +288,12 @@ async def _clear_chat(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик команды /clear — очистка чата."""
     await _clear_chat(update.effective_chat.id, context)
 
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик нажатий на инлайн-кнопки."""
     query = update.callback_query
     await query.answer()
     chat_id = query.message.chat_id
@@ -287,6 +331,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 def main() -> None:
+    """Запускает Telegram-бота в режиме long polling."""
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))

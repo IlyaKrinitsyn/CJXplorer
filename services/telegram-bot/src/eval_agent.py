@@ -1,3 +1,10 @@
+"""
+Агент оценки клиентских путей.
+
+Отправляет скриншоты CJ в LLM-модель вместе с системным промптом
+и возвращает текстовую оценку по критериальной модели.
+"""
+
 import base64
 from openai import AsyncOpenAI
 
@@ -8,6 +15,7 @@ client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
 
 
 def _pluralize(n: int, one: str, few: str, many: str) -> str:
+    """Склонение существительного по числительному (русский язык)."""
     if 11 <= n % 100 <= 19:
         return f"{n} {many}"
     mod = n % 10
@@ -19,6 +27,16 @@ def _pluralize(n: int, one: str, few: str, many: str) -> str:
 
 
 async def evaluate_screenshots(screenshots: list[bytes], model: str) -> str:
+    """
+    Оценивает клиентский путь по набору скриншотов.
+
+    Args:
+        screenshots: Список скриншотов в байтах, упорядоченных по шагам CJ.
+        model: Идентификатор LLM-модели (например, 'openai/gpt-4o').
+
+    Returns:
+        Текст оценки в формате HTML для Telegram.
+    """
     count = _pluralize(len(screenshots), "скриншот", "скриншота", "скриншотов")
     user_content = [
         {

@@ -330,6 +330,13 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 
+async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик любого текста, не являющегося командой."""
+    await update.message.reply_text(
+        "Я принимаю только скриншоты. Отправь изображения экранов приложения или сайта."
+    )
+
+
 def main() -> None:
     """Запускает Telegram-бота в режиме long polling."""
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -341,6 +348,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_unknown))
 
     logger.info("Bot started")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

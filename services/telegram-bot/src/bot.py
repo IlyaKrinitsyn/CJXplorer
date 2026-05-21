@@ -37,6 +37,27 @@ KB_NEW_SESSION = InlineKeyboardMarkup([
 ])
 
 
+async def _edit_status(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE,
+                       reply_markup=None, parse_mode=None) -> None:
+    """Edit the status message or create a new one if it doesn't exist."""
+    if chat_id in STATUS_MESSAGES:
+        try:
+            await context.bot.edit_message_text(
+                text,
+                chat_id=chat_id,
+                message_id=STATUS_MESSAGES[chat_id],
+                reply_markup=reply_markup,
+                parse_mode=parse_mode,
+            )
+            return
+        except Exception:
+            pass
+    msg = await context.bot.send_message(
+        chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode
+    )
+    STATUS_MESSAGES[chat_id] = msg.message_id
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Привет! Я оцениваю клиентские пути по критериальной модели CX.\n\n"
@@ -52,32 +73,16 @@ async def _save_screenshot(chat_id: int, data: bytes) -> int:
     return len(SESSIONS[chat_id])
 
 
-async def _update_status(chat_id: int, count: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = f"📎 Загружено скриншотов: {count}"
-    if chat_id in STATUS_MESSAGES:
-        try:
-            await context.bot.edit_message_text(
-                text,
-                chat_id=chat_id,
-                message_id=STATUS_MESSAGES[chat_id],
-                reply_markup=KB_AFTER_SCREENSHOT,
-            )
-            return
-        except Exception:
-            pass
-    msg = await context.bot.send_message(
-        chat_id, text, reply_markup=KB_AFTER_SCREENSHOT
-    )
-    STATUS_MESSAGES[chat_id] = msg.message_id
-
-
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     photo = update.message.photo[-1]
     file = await photo.get_file()
     data = await file.download_as_bytearray()
     count = await _save_screenshot(chat_id, bytes(data))
-    await _update_status(chat_id, count, context)
+    await _edit_status(
+        chat_id, f"📎 Загружено скриншотов: {count}",
+        context, reply_markup=KB_AFTER_SCREENSHOT,
+    )
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -90,55 +95,67 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     file = await doc.get_file()
     data = await file.download_as_bytearray()
     count = await _save_screenshot(chat_id, bytes(data))
-    await _update_status(chat_id, count, context)
+    await _edit_status(
+        chat_id, f"📎 Загружено скриншотов: {count}",
+        context, reply_markup=KB_AFTER_SCREENSHOT,
+    )
 
 
-async def _do_evaluate(chat_id: int, send_message) -> None:
+async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     screenshots = SESSIONS.get(chat_id, [])
 
     if not screenshots:
-        await send_message("Нет загруженных скриншотов. Сначала отправь скрины CJ.")
+        await _edit_status(
+            chat_id, "Нет загруженных скриншотов. Сначала отправь скрины CJ.", context
+        )
         return
 
-    await send_message(
-        f"⏳ Анализирую клиентский путь из {len(screenshots)} скриншотов…"
+    await _edit_status(
+        chat_id,
+        f"⏳ Анализирую клиентский путь из {len(screenshots)} скриншотов…",
+        context,
     )
 
     try:
         result = await evaluate_screenshots(screenshots)
     except Exception as e:
         logger.error(f"Evaluation failed: {e}")
-        await send_message(f"Ошибка при анализе: {e}")
+        await _edit_status(chat_id, f"Ошибка при анализе: {e}", context)
         return
 
     footer = f"\n\n🤖 <i>Модель: {OPENAI_MODEL}</i>"
     result_with_footer = result + footer
 
     if len(result_with_footer) <= 4096:
-        await send_message(result_with_footer, parse_mode="HTML", reply_markup=KB_NEW_SESSION)
+        await _edit_status(
+            chat_id, result_with_footer, context,
+            reply_markup=KB_NEW_SESSION, parse_mode="HTML",
+        )
     else:
+        # First chunk edits the status message, rest are new messages
         chunks = [result[i : i + 4096] for i in range(0, len(result), 4096)]
         for i, chunk in enumerate(chunks):
             is_last = i == len(chunks) - 1
             if is_last:
                 chunk += footer
-                if len(chunk) > 4096:
-                    await send_message(chunk[:4096], parse_mode="HTML")
-                    await send_message(chunk[4096:], parse_mode="HTML", reply_markup=KB_NEW_SESSION)
-                    continue
-            await send_message(
-                chunk,
-                parse_mode="HTML",
-                reply_markup=KB_NEW_SESSION if is_last else None,
-            )
+            if i == 0:
+                await _edit_status(
+                    chat_id, chunk, context, parse_mode="HTML",
+                    reply_markup=KB_NEW_SESSION if is_last else None,
+                )
+            else:
+                msg = await context.bot.send_message(
+                    chat_id, chunk, parse_mode="HTML",
+                    reply_markup=KB_NEW_SESSION if is_last else None,
+                )
+                if is_last:
+                    STATUS_MESSAGES[chat_id] = msg.message_id
 
     SESSIONS.pop(chat_id, None)
-    STATUS_MESSAGES.pop(chat_id, None)
 
 
 async def evaluate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    chat_id = update.effective_chat.id
-    await _do_evaluate(chat_id, update.message.reply_text)
+    await _do_evaluate(update.effective_chat.id, context)
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -169,7 +186,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     chat_id = query.message.chat_id
 
     if query.data == "evaluate":
-        await _do_evaluate(chat_id, query.message.reply_text)
+        await _do_evaluate(chat_id, context)
     elif query.data == "reset":
         SESSIONS.pop(chat_id, None)
         STATUS_MESSAGES.pop(chat_id, None)

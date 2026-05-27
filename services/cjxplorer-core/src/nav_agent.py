@@ -157,14 +157,18 @@ async def decide_next_action(
 
     user_content: list[dict] = [
         {"type": "text", "text": user_text},
-        {
+    ]
+
+    if screenshot_b64:
+        user_content.append({
             "type": "image_url",
             "image_url": {
                 "url": f"data:image/jpeg;base64,{screenshot_b64}",
                 "detail": "high",
             },
-        },
-    ]
+        })
+    else:
+        logger.warning(f"Step {step}: no screenshot, text-only LLM call")
 
     for attempt in range(MAX_RETRY + 1):
         try:

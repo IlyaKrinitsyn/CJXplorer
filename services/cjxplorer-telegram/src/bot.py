@@ -153,6 +153,7 @@ async def _kb_after_screenshot(chat_id: int) -> InlineKeyboardMarkup:
                 f"🔀 Модель: {label}", callback_data="pick_model"
             ),
         ],
+        [InlineKeyboardButton("← В начало", callback_data="go_home")],
     ])
 
 
@@ -273,6 +274,15 @@ async def _remove_buttons(query) -> None:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    SESSIONS.pop(chat_id, None)
+    STATUS_MESSAGES.pop(chat_id, None)
+    LAST_EVALUATIONS.pop(chat_id, None)
+    nav = NAV_SESSIONS.pop(chat_id, None)
+    if nav and "poll_task" in nav:
+        nav["state"] = "cancelled"
+        nav["poll_task"].cancel()
+
     await update.message.reply_text(
         "Привет! Я оцениваю клиентские пути по критериальной модели CX.\n\n"
         "📸 <b>Оценка CJ</b> — отправь скриншоты и получи оценку.\n"
@@ -760,6 +770,9 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if data == "mode_evaluate":
         await _remove_buttons(query)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("← В начало", callback_data="go_home")]
+        ])
         await _send_or_edit(
             chat_id,
             "📸 Отправь скриншоты клиентского пути — по одному, альбомом "
@@ -767,6 +780,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "Можно отправить один скрин с несколькими экранами (например, из Figma).\n\n"
             "Когда все скрины загружены, нажми «Оценить».",
             context, edit=False,
+            reply_markup=kb,
         )
 
     elif data == "evaluate":
@@ -799,6 +813,21 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _do_improve(chat_id, context)
 
     elif data == "new_session":
+        SESSIONS.pop(chat_id, None)
+        STATUS_MESSAGES.pop(chat_id, None)
+        LAST_EVALUATIONS.pop(chat_id, None)
+        nav = NAV_SESSIONS.pop(chat_id, None)
+        if nav and "poll_task" in nav:
+            nav["state"] = "cancelled"
+            nav["poll_task"].cancel()
+        await _remove_buttons(query)
+        await context.bot.send_message(
+            chat_id,
+            "Выбери режим работы:",
+            reply_markup=KB_START,
+        )
+
+    elif data == "go_home":
         SESSIONS.pop(chat_id, None)
         STATUS_MESSAGES.pop(chat_id, None)
         LAST_EVALUATIONS.pop(chat_id, None)

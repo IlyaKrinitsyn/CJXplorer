@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CJXplorer</string>
+    <string name="accessibility_service_description">CJXplorer использует Accessibility для навигации по клиентским путям в приложениях.</string>
+    <string name="navigation_channel_name">Навигация</string>
+    <string name="navigation_notification_title">CJXplorer работает</string>
+    <string name="navigation_notification_text">Навигация по клиентскому пути…</string>
+</resources>

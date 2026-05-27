@@ -10,6 +10,9 @@ on:
 
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -17,12 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Bump versions for changed services
         run: |
-          CHANGED=$(git diff --name-only HEAD~1 HEAD)
-
           bump_patch() {
             local file="$1"
             if [ ! -f "$file" ]; then
@@ -36,6 +37,14 @@ jobs:
             echo "$major.$minor.$patch" > "$file"
             echo "  $file → $major.$minor.$patch"
           }
+
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "No previous commit, skipping version bump"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "$BEFORE" HEAD)
 
           if echo "$CHANGED" | grep -q "^services/cjxplorer-core/"; then
             echo "Bumping cjxplorer-core..."

@@ -6,9 +6,13 @@
 """
 
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+VERSION = (Path(__file__).parent.parent / "VERSION").read_text().strip()
+"""Версия сервиса cjxplorer-core, читается из файла VERSION."""
 
 LLM_API_KEY = os.environ["LLM_API_KEY"]
 """API-ключ для LLM-провайдера (OpenRouter, OpenAI и т.д.)."""

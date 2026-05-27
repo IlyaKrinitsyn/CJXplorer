@@ -21,7 +21,7 @@ from telegram.ext import (
     filters,
 )
 
-from .config import TELEGRAM_BOT_TOKEN
+from .config import TELEGRAM_BOT_TOKEN, VERSION
 from . import backend_client
 
 logging.basicConfig(
@@ -245,6 +245,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
+async def _build_footer(label: str) -> str:
+    """Формирует footer с моделью и версиями сервисов."""
+    core_version = await backend_client.get_backend_version()
+    return (
+        f"\n\n🤖 <i>Модель: {label}</i>"
+        f"\n<i>core=v{core_version} · telegram=v{VERSION}</i>"
+    )
+
+
 async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Запускает оценку через бэкенд."""
     screenshots = SESSIONS.get(chat_id, [])
@@ -278,7 +287,7 @@ async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None
         "model": model,
     }
 
-    footer = f"\n\n🤖 <i>Модель: {label}</i>"
+    footer = await _build_footer(label)
     result_with_footer = result + footer
 
     if len(result_with_footer) <= 4096:
@@ -339,7 +348,7 @@ async def _do_improve(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    footer = f"\n\n🤖 <i>Модель: {label}</i>"
+    footer = await _build_footer(label)
     result_with_footer = result + footer
 
     if len(result_with_footer) <= 4096:

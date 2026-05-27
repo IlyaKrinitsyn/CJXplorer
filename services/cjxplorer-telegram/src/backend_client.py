@@ -30,6 +30,16 @@ async def close() -> None:
         _client = None
 
 
+async def get_backend_version() -> str:
+    """Получить версию бэкенда."""
+    try:
+        resp = await _get_client().get("/health")
+        resp.raise_for_status()
+        return resp.json().get("version", "?")
+    except Exception:
+        return "?"
+
+
 async def get_models() -> dict:
     """Получить список доступных моделей с бэкенда."""
     resp = await _get_client().get("/models")

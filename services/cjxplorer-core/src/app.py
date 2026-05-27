@@ -11,7 +11,7 @@ import logging
 from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import AVAILABLE_MODELS, DEFAULT_MODEL
+from .config import AVAILABLE_MODELS, DEFAULT_MODEL, VERSION
 from .eval_agent import evaluate_screenshots, suggest_improvements
 from .models import (
     EvaluateRequest,
@@ -45,7 +45,7 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     """Проверка работоспособности сервиса."""
-    return {"status": "ok"}
+    return {"status": "ok", "version": VERSION}
 
 
 @app.get("/models")

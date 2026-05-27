@@ -15,6 +15,50 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Bump versions for changed services
+        run: |
+          CHANGED=$(git diff --name-only HEAD~1 HEAD)
+
+          bump_patch() {
+            local file="$1"
+            if [ ! -f "$file" ]; then
+              echo "0.0.0" > "$file"
+            fi
+            local v=$(cat "$file" | tr -d '[:space:]')
+            local major=$(echo "$v" | cut -d. -f1)
+            local minor=$(echo "$v" | cut -d. -f2)
+            local patch=$(echo "$v" | cut -d. -f3)
+            patch=$((patch + 1))
+            echo "$major.$minor.$patch" > "$file"
+            echo "  $file → $major.$minor.$patch"
+          }
+
+          if echo "$CHANGED" | grep -q "^services/cjxplorer-core/"; then
+            echo "Bumping cjxplorer-core..."
+            bump_patch services/cjxplorer-core/VERSION
+          fi
+
+          if echo "$CHANGED" | grep -q "^services/cjxplorer-telegram/"; then
+            echo "Bumping cjxplorer-telegram..."
+            bump_patch services/cjxplorer-telegram/VERSION
+          fi
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add services/*/VERSION
+          if git diff --staged --quiet; then
+            echo "No version changes to commit"
+          else
+            git commit -m "bump versions [skip ci]"
+            git push
+          fi
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
         with:

@@ -23,6 +23,24 @@ from .tasks import NavigationTask
 
 logger = logging.getLogger(__name__)
 
+MAX_REPEAT_ACTIONS = 3
+
+
+def _detect_loop(action_history: list[dict]) -> bool:
+    """
+    Определяет зацикливание: одинаковое действие повторяется
+    MAX_REPEAT_ACTIONS раз подряд.
+    Сравнивает action + node_id + direction (без reason — он меняется).
+    """
+    if len(action_history) < MAX_REPEAT_ACTIONS:
+        return False
+
+    def _key(a: dict) -> tuple:
+        return (a.get("action"), a.get("node_id"), a.get("direction"))
+
+    recent = action_history[-MAX_REPEAT_ACTIONS:]
+    return all(_key(a) == _key(recent[0]) for a in recent)
+
 
 async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) -> None:
     """
@@ -121,6 +139,15 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
             )
 
             task.action_history.append(action)
+
+            if _detect_loop(task.action_history):
+                logger.warning(
+                    f"[WS] Обнаружен цикл на шаге {task.current_step}, "
+                    f"принудительное завершение"
+                )
+                await websocket.send_json({"type": "done"})
+                task.result = "Навигация зациклилась — одни и те же действия повторяются"
+                break
 
             if action.get("action") == "done":
                 logger.info(f"[WS→device] Отправка done")

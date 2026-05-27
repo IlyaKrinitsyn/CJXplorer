@@ -139,6 +139,10 @@ KB_NAV_CANCEL = InlineKeyboardMarkup([
     [InlineKeyboardButton("❌ Отмена", callback_data="nav_cancel")]
 ])
 
+KB_NAV_BACK = InlineKeyboardMarkup([
+    [InlineKeyboardButton("← В начало", callback_data="go_home")]
+])
+
 
 async def _kb_after_screenshot(chat_id: int) -> InlineKeyboardMarkup:
     model = await _get_model(chat_id)
@@ -472,10 +476,9 @@ async def _nav_start(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• Открытие вклада в Сбербанк\n"
         "• Оформление ОСАГО в Тинькофф</i>\n\n"
         "⚠️ Пока поддерживается <b>один клиентский путь в одном приложении</b>. "
-        "Сравнительный анализ нескольких приложений — в следующих версиях.\n\n"
-        "🚧 <i>Разработка в процессе</i>",
+        "Сравнительный анализ нескольких приложений — в следующих версиях.",
         context, parse_mode="HTML", edit=False,
-        reply_markup=KB_NAV_CANCEL,
+        reply_markup=KB_NAV_BACK,
     )
 
 

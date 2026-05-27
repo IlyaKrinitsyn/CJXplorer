@@ -21,7 +21,7 @@ class CJXplorerWebSocketClient(
     private val okHttpClient: OkHttpClient,
     private val settingsRepository: CJXplorerSettingsRepository
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     private var webSocket: WebSocket? = null
 

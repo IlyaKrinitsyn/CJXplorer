@@ -8,6 +8,7 @@
 
 import json
 import logging
+import time
 
 from openai import AsyncOpenAI
 
@@ -16,6 +17,7 @@ from .nav_prompts import NAV_SYSTEM_PROMPT, NAV_USER_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
+logger.info(f"[NAV] LLM client: base_url={LLM_BASE_URL}, api_key={'set' if LLM_API_KEY else 'EMPTY'}")
 _client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
 
 VALID_ACTIONS = {"click", "scroll", "type", "input_needed", "back", "done"}
@@ -146,6 +148,12 @@ async def decide_next_action(
     filtered_nodes = _filter_nodes(nodes)
     nodes_json = json.dumps(filtered_nodes, ensure_ascii=False, indent=1)
 
+    logger.info(
+        f"[NAV] Step {step}: raw nodes={len(nodes)}, "
+        f"filtered nodes={len(filtered_nodes)}, "
+        f"nodes_json={len(nodes_json)} chars"
+    )
+
     history_text = _format_action_history(action_history or [])
 
     user_text = NAV_USER_TEMPLATE.format(
@@ -167,10 +175,19 @@ async def decide_next_action(
                 "detail": "high",
             },
         })
+        logger.info(f"[NAV] Step {step}: screenshot attached, {len(screenshot_b64)} chars base64")
     else:
-        logger.warning(f"Step {step}: no screenshot, text-only LLM call")
+        logger.warning(f"[NAV] Step {step}: no screenshot, text-only LLM call")
+
+    logger.info(
+        f"[NAV] Step {step}: user_text={len(user_text)} chars, "
+        f"model={model}, base_url={LLM_BASE_URL}"
+    )
 
     for attempt in range(MAX_RETRY + 1):
+        t0 = time.monotonic()
+        logger.info(f"[NAV] Step {step}: LLM call attempt {attempt + 1}/{MAX_RETRY + 1}...")
+
         try:
             response = await _client.chat.completions.create(
                 model=model,
@@ -181,23 +198,46 @@ async def decide_next_action(
                 max_tokens=512,
             )
 
+            elapsed = time.monotonic() - t0
             raw = response.choices[0].message.content
-            logger.info(f"Step {step}: LLM raw response: {raw[:200]}")
+            usage = getattr(response, "usage", None)
+            logger.info(
+                f"[NAV] Step {step}: LLM responded in {elapsed:.1f}s, "
+                f"tokens={getattr(usage, 'total_tokens', '?') if usage else '?'}, "
+                f"raw={raw[:500] if raw else 'EMPTY'}"
+            )
+
+            if not raw:
+                logger.error(f"[NAV] Step {step}: LLM returned empty content!")
+                if attempt < MAX_RETRY:
+                    continue
+                return {"action": "done", "reason": "LLM вернул пустой ответ"}
 
             parsed = _parse_llm_response(raw)
             if parsed:
-                logger.info(f"Step {step}: action={parsed.get('action')}")
+                logger.info(f"[NAV] Step {step}: parsed action={parsed.get('action')}")
                 return parsed
 
             if attempt < MAX_RETRY:
-                logger.warning(f"Step {step}: invalid JSON, retry {attempt + 1}")
+                logger.warning(
+                    f"[NAV] Step {step}: invalid JSON (attempt {attempt + 1}), "
+                    f"raw={raw[:300]}"
+                )
                 continue
 
-            logger.error(f"Step {step}: failed to parse after {MAX_RETRY + 1} attempts")
+            logger.error(
+                f"[NAV] Step {step}: failed to parse after {MAX_RETRY + 1} attempts, "
+                f"last raw={raw[:500]}"
+            )
             return {"action": "done", "reason": "Не удалось разобрать ответ LLM"}
 
         except Exception as e:
-            logger.error(f"Step {step}: LLM call failed: {e}")
+            elapsed = time.monotonic() - t0
+            logger.error(
+                f"[NAV] Step {step}: LLM call FAILED in {elapsed:.1f}s "
+                f"(attempt {attempt + 1}): {type(e).__name__}: {e}",
+                exc_info=True,
+            )
             if attempt < MAX_RETRY:
                 continue
             return {"action": "done", "reason": f"Ошибка LLM: {e}"}

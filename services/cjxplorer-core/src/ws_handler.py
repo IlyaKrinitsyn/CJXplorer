@@ -10,7 +10,9 @@
 
 import asyncio
 import base64
+import json
 import logging
+import time
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -39,7 +41,7 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
     """
     await websocket.accept()
     task.status = TaskStatus.RUNNING
-    logger.info(f"Устройство подключено к задаче {task.task_id}")
+    logger.info(f"[WS] Устройство подключено к задаче {task.task_id}")
 
     try:
         if task.app_name:
@@ -47,15 +49,24 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
         else:
             task_text = task.journey_description
 
-        await websocket.send_json({
-            "type": "start",
-            "task": task_text,
-        })
+        start_msg = {"type": "start", "task": task_text}
+        logger.info(f"[WS→device] Отправка start: {json.dumps(start_msg, ensure_ascii=False)[:300]}")
+        await websocket.send_json(start_msg)
 
         while task.current_step < NAV_MAX_STEPS:
+            logger.info(f"[WS] Ожидание state от устройства (шаг {task.current_step + 1})...")
             data = await websocket.receive_json()
 
-            if data.get("type") != "state":
+            msg_type = data.get("type", "unknown")
+            logger.info(
+                f"[WS←device] Получено: type={msg_type}, "
+                f"screenshot={len(data.get('screenshot', ''))} chars, "
+                f"nodes={len(data.get('nodes', []))} items, "
+                f"полный размер={len(json.dumps(data))} chars"
+            )
+
+            if msg_type != "state":
+                logger.warning(f"[WS] Пропускаем сообщение type={msg_type}")
                 continue
 
             task.current_step += 1
@@ -64,24 +75,55 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
 
             if screenshot_b64:
                 task.screenshots.append(base64.b64decode(screenshot_b64))
+                logger.info(f"[WS] Скриншот сохранён: {len(screenshot_b64)} chars base64")
+            else:
+                logger.warning(f"[WS] Пустой скриншот на шаге {task.current_step}")
 
             if task.app_name:
                 task_desc = f"{task.app_name}: {task.journey_description}"
             else:
                 task_desc = task.journey_description
 
-            action = await decide_next_action(
-                screenshot_b64=screenshot_b64,
-                nodes=nodes,
-                task_description=task_desc,
-                step=task.current_step,
-                model=task.model,
-                action_history=task.action_history,
+            logger.info(
+                f"[WS] Вызов LLM: шаг={task.current_step}, "
+                f"модель={task.model}, screenshot={len(screenshot_b64)} chars, "
+                f"nodes={len(nodes)} items, history={len(task.action_history)} actions"
+            )
+            llm_start = time.monotonic()
+
+            try:
+                action = await decide_next_action(
+                    screenshot_b64=screenshot_b64,
+                    nodes=nodes,
+                    task_description=task_desc,
+                    step=task.current_step,
+                    model=task.model,
+                    action_history=task.action_history,
+                )
+            except Exception as e:
+                logger.error(
+                    f"[WS] LLM вызов упал через {time.monotonic() - llm_start:.1f}s: "
+                    f"{type(e).__name__}: {e}",
+                    exc_info=True,
+                )
+                await websocket.send_json({
+                    "type": "done",
+                    "reason": f"LLM error: {e}",
+                })
+                task.status = TaskStatus.FAILED
+                task.result = f"LLM error: {e}"
+                return
+
+            llm_elapsed = time.monotonic() - llm_start
+            logger.info(
+                f"[WS] LLM ответил за {llm_elapsed:.1f}s: "
+                f"{json.dumps(action, ensure_ascii=False)[:500]}"
             )
 
             task.action_history.append(action)
 
             if action.get("action") == "done":
+                logger.info(f"[WS→device] Отправка done")
                 await websocket.send_json({"type": "done"})
                 break
 
@@ -89,24 +131,29 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
                 await _handle_input_request(websocket, task, action)
                 continue
 
-            await websocket.send_json({"type": "action", **action})
+            out_msg = {"type": "action", **action}
+            logger.info(
+                f"[WS→device] Отправка action: "
+                f"{json.dumps(out_msg, ensure_ascii=False)[:500]}"
+            )
+            await websocket.send_json(out_msg)
 
         logger.info(
-            f"Задача {task.task_id}: навигация завершена, "
+            f"[WS] Задача {task.task_id}: навигация завершена, "
             f"{len(task.screenshots)} скриншотов в кеше"
         )
         task.status = TaskStatus.DONE
 
     except WebSocketDisconnect:
-        logger.warning(f"Устройство отключилось от задачи {task.task_id}")
+        logger.warning(f"[WS] Устройство отключилось от задачи {task.task_id}")
         task.status = TaskStatus.FAILED
         task.result = "Устройство отключилось"
     except asyncio.TimeoutError:
-        logger.warning(f"Задача {task.task_id}: таймаут ожидания ввода")
+        logger.warning(f"[WS] Задача {task.task_id}: таймаут ожидания ввода")
         task.status = TaskStatus.FAILED
         task.result = "Таймаут ожидания ввода данных"
     except Exception as e:
-        logger.error(f"Задача {task.task_id} упала: {e}")
+        logger.error(f"[WS] Задача {task.task_id} упала: {type(e).__name__}: {e}", exc_info=True)
         task.status = TaskStatus.FAILED
         task.result = str(e)
 

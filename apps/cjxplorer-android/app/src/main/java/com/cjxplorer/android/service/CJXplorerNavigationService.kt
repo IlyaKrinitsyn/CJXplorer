@@ -56,10 +56,20 @@ class CJXplorerNavigationService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val taskId = intent?.getStringExtra(EXTRA_TASK_ID)
-        val projectionResultCode = intent?.getIntExtra(EXTRA_PROJECTION_RESULT_CODE, -1) ?: -1
-        val projectionData = intent?.getParcelableExtra<Intent>(EXTRA_PROJECTION_DATA)
+        val hasProjectionExtra = intent?.hasExtra(EXTRA_PROJECTION_RESULT_CODE) == true
+        val projectionResultCode = intent?.getIntExtra(EXTRA_PROJECTION_RESULT_CODE, 0) ?: 0
+        val projectionData: Intent? = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            intent?.getParcelableExtra(EXTRA_PROJECTION_DATA, Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra(EXTRA_PROJECTION_DATA)
+        }
 
-        Log.i(TAG, "Navigation service started for task: $taskId")
+        Log.i(TAG, "=== onStartCommand ===")
+        Log.i(TAG, "taskId=$taskId")
+        Log.i(TAG, "hasProjectionExtra=$hasProjectionExtra, projectionResultCode=$projectionResultCode")
+        Log.i(TAG, "projectionData=${projectionData != null}")
+        Log.i(TAG, "wsClient initialized=${::wsClient.isInitialized}")
 
         val notification = buildNotification()
         startForeground(NOTIFICATION_ID, notification)
@@ -71,12 +81,17 @@ class CJXplorerNavigationService : Service() {
         }
 
         val capture = CJXplorerScreenCapture(this)
-        if (projectionData != null && projectionResultCode != -1) {
+        if (projectionData != null && hasProjectionExtra) {
             capture.onPermissionResult(projectionResultCode, projectionData)
+            Log.i(TAG, "MediaProjection initialized, isReady=${capture.isReady}")
+        } else {
+            Log.w(TAG, "No MediaProjection data! hasExtra=$hasProjectionExtra, data=${projectionData != null}")
         }
         screenCapture = capture
 
+        Log.i(TAG, "Connecting wsClient to task $taskId...")
         wsClient.connect(taskId)
+        Log.i(TAG, "Starting navigation loop...")
         startNavigationLoop()
 
         return START_NOT_STICKY
@@ -95,36 +110,48 @@ class CJXplorerNavigationService : Service() {
     }
 
     private fun startNavigationLoop() {
+        Log.i(TAG, "startNavigationLoop: launching coroutine")
         navigationJob = serviceScope.launch {
-            delay(INITIAL_DELAY_MS)
-
+            Log.i(TAG, "Coroutine started, collecting wsClient.actions...")
+            var stepCount = 0
             wsClient.actions.collect { action ->
-                Log.i(TAG, "Received action: $action")
+                stepCount++
+                Log.i(TAG, ">>> ACTION RECEIVED (#$stepCount): $action")
 
-                if (action is NavigationAction.Done) {
-                    Log.i(TAG, "Navigation complete")
-                    stop(this@CJXplorerNavigationService)
-                    return@collect
+                when (action) {
+                    is NavigationAction.Start -> {
+                        Log.i(TAG, "START received: ${action.task}")
+                        Log.i(TAG, "A11y instance: ${CJXplorerAccessibilityService.instance != null}")
+                        Log.i(TAG, "ScreenCapture ready: ${screenCapture?.isReady}")
+                        delay(INITIAL_DELAY_MS)
+                        Log.i(TAG, "Sending initial screen state...")
+                        sendScreenState()
+                        Log.i(TAG, "Initial screen state sent, waiting for backend response...")
+                    }
+                    is NavigationAction.Done -> {
+                        Log.i(TAG, "DONE received, stopping service")
+                        stop(this@CJXplorerNavigationService)
+                        return@collect
+                    }
+                    else -> {
+                        val a11y = CJXplorerAccessibilityService.instance
+                        if (a11y == null) {
+                            Log.e(TAG, "AccessibilityService NOT available, cannot perform action")
+                            return@collect
+                        }
+
+                        Log.i(TAG, "Performing action: $action")
+                        val success = a11y.performAction(action)
+                        Log.i(TAG, "Action result: success=$success")
+
+                        delay(ACTION_SETTLE_DELAY_MS)
+                        Log.i(TAG, "Sending screen state after action...")
+                        sendScreenState()
+                        Log.i(TAG, "Screen state sent, waiting for backend response...")
+                    }
                 }
-
-                val a11y = CJXplorerAccessibilityService.instance
-                if (a11y == null) {
-                    Log.e(TAG, "AccessibilityService not available")
-                    return@collect
-                }
-
-                val success = a11y.performAction(action)
-                Log.i(TAG, "Action performed: success=$success")
-
-                delay(ACTION_SETTLE_DELAY_MS)
-
-                sendScreenState()
             }
-        }
-
-        serviceScope.launch {
-            delay(INITIAL_DELAY_MS)
-            sendScreenState()
+            Log.i(TAG, "actions.collect completed (flow ended)")
         }
     }
 

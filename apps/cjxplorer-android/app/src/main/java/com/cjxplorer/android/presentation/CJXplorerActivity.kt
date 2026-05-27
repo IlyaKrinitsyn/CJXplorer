@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -49,6 +50,7 @@ class CJXplorerActivity : ComponentActivity() {
                         onDisconnect = viewModel::disconnectFromServer,
                         onStopNavigation = viewModel::stopNavigation,
                         onRequestProjection = ::requestMediaProjection,
+                        onOpenAccessibilitySettings = ::openAccessibilitySettings,
                         modifier = Modifier.padding(innerPadding)
                     )
                 }
@@ -56,8 +58,19 @@ class CJXplorerActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::viewModel.isInitialized) {
+            viewModel.refreshAccessibilityStatus()
+        }
+    }
+
     private fun requestMediaProjection() {
         val pm = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projectionLauncher.launch(pm.createScreenCaptureIntent())
+    }
+
+    private fun openAccessibilitySettings() {
+        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
     }
 }

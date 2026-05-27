@@ -7,7 +7,9 @@ import androidx.lifecycle.viewModelScope
 import com.cjxplorer.android.data.settings.CJXplorerSettingsRepository
 import com.cjxplorer.android.data.websocket.CJXplorerDeviceClient
 import com.cjxplorer.android.domain.model.TaskInfo
+import com.cjxplorer.android.service.CJXplorerAccessibilityService
 import com.cjxplorer.android.service.CJXplorerNavigationService
+import android.util.Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -22,6 +24,7 @@ data class CJXplorerUiState(
     val isDeviceConnected: Boolean = false,
     val isConnecting: Boolean = false,
     val connectionError: String? = null,
+    val isAccessibilityEnabled: Boolean = false,
     val hasProjectionPermission: Boolean = false,
     val currentTask: TaskInfo? = null,
     val isNavigating: Boolean = false,
@@ -120,6 +123,11 @@ class CJXplorerViewModel @Inject constructor(
         deviceClient.disconnect()
     }
 
+    fun refreshAccessibilityStatus() {
+        val enabled = CJXplorerAccessibilityService.instance != null
+        _uiState.value = _uiState.value.copy(isAccessibilityEnabled = enabled)
+    }
+
     fun saveProjectionResult(resultCode: Int, data: Intent) {
         projectionResultCode = resultCode
         projectionData = data
@@ -132,12 +140,16 @@ class CJXplorerViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(isNavigating = true)
         addLog("Запуск навигации для задачи ${task.taskId}...")
 
+        Log.i(TAG, "startNavigation: taskId=${task.taskId}")
+        Log.i(TAG, "startNavigation: projectionResultCode=$projectionResultCode, projectionData=${projectionData != null}")
+
         CJXplorerNavigationService.start(
             context = ctx,
             taskId = task.taskId,
             projectionResultCode = projectionResultCode,
             projectionData = projectionData
         )
+        Log.i(TAG, "startNavigation: service start requested")
     }
 
     fun stopNavigation() {
@@ -153,6 +165,7 @@ class CJXplorerViewModel @Inject constructor(
     }
 
     companion object {
+        private const val TAG = "CJXplorerVM"
         private const val CONNECTION_TIMEOUT_MS = 15_000L
     }
 }

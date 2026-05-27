@@ -19,6 +19,7 @@ fun CJXplorerHomeScreen(
     onDisconnect: () -> Unit,
     onStopNavigation: () -> Unit,
     onRequestProjection: () -> Unit,
+    onOpenAccessibilitySettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var serverUrlInput by remember(uiState.serverUrl) { mutableStateOf(uiState.serverUrl) }
@@ -129,6 +130,38 @@ fun CJXplorerHomeScreen(
                     )
                     Button(onClick = onRequestProjection) {
                         Text("Разрешить запись экрана")
+                    }
+                }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Accessibility", style = MaterialTheme.typography.titleSmall)
+
+                if (uiState.isAccessibilityEnabled) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(12.dp)
+                        ) {}
+                        Text("Сервис включён", style = MaterialTheme.typography.bodySmall)
+                    }
+                } else {
+                    Text(
+                        text = "Для навигации по приложениям нужен Accessibility Service",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(onClick = onOpenAccessibilitySettings) {
+                        Text("Открыть настройки Accessibility")
                     }
                 }
             }

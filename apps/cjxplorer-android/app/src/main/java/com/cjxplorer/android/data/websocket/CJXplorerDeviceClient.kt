@@ -66,9 +66,11 @@ class CJXplorerDeviceClient(
     }
 
     private fun doConnect() {
-        val baseUrl = settingsRepository.getServerUrl()
+        val baseUrl = settingsRepository.getServerUrl().trimEnd('/')
+        val url = "$baseUrl/ws/device"
+        Log.i(TAG, "Connecting to $url")
         val request = Request.Builder()
-            .url("$baseUrl/ws/device")
+            .url(url)
             .build()
 
         webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {

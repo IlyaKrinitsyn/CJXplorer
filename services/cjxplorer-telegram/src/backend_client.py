@@ -48,6 +48,20 @@ async def evaluate(screenshots: list[bytes], model: str) -> dict:
     return resp.json()
 
 
+async def improve(
+    screenshots: list[bytes], evaluation_result: str, model: str
+) -> dict:
+    """Отправить скриншоты и результат оценки на анализ улучшений."""
+    payload = {
+        "screenshots": [base64.b64encode(s).decode() for s in screenshots],
+        "evaluation_result": evaluation_result,
+        "model": model,
+    }
+    resp = await _get_client().post("/improve", json=payload)
+    resp.raise_for_status()
+    return resp.json()
+
+
 async def create_navigation_task(app_name: str, journey: str, model: str) -> dict:
     """Создать задачу навигации на бэкенде."""
     payload = {

@@ -12,10 +12,12 @@ from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import AVAILABLE_MODELS, DEFAULT_MODEL
-from .eval_agent import evaluate_screenshots
+from .eval_agent import evaluate_screenshots, suggest_improvements
 from .models import (
     EvaluateRequest,
     EvaluateResponse,
+    ImproveRequest,
+    ImproveResponse,
     NavigateRequest,
     TaskInputRequest,
     TaskResponse,
@@ -66,6 +68,24 @@ async def evaluate(request: EvaluateRequest):
         raise HTTPException(500, f"Ошибка при анализе: {e}")
 
     return EvaluateResponse(result=result, model=request.model)
+
+
+@app.post("/improve", response_model=ImproveResponse)
+async def improve(request: ImproveRequest):
+    """Анализ улучшений CJ: скриншоты + результат предыдущей оценки."""
+    screenshots = [base64.b64decode(s) for s in request.screenshots]
+    if not screenshots:
+        raise HTTPException(400, "Нет скриншотов для анализа")
+
+    try:
+        result = await suggest_improvements(
+            screenshots, request.evaluation_result, request.model
+        )
+    except Exception as e:
+        logger.error(f"Improvement analysis failed: {e}")
+        raise HTTPException(500, f"Ошибка при анализе улучшений: {e}")
+
+    return ImproveResponse(result=result, model=request.model)
 
 
 @app.post("/navigate", response_model=TaskResponse)

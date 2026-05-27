@@ -39,6 +39,9 @@ STATUS_MESSAGES: dict[int, int] = {}
 USER_MODELS: dict[int, str] = {}
 """Выбранная модель для каждого чата."""
 
+LAST_EVALUATIONS: dict[int, dict] = {}
+"""Результат последней оценки для каждого чата (screenshots + result + model)."""
+
 _MODELS_CACHE: dict | None = None
 """Кеш моделей с бэкенда."""
 _MODELS_CACHE_TS: float = 0.0
@@ -121,6 +124,13 @@ async def _kb_after_screenshot(chat_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+KB_AFTER_EVAL = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("💡 Как улучшить?", callback_data="improve"),
+        InlineKeyboardButton("🔄 Новая оценка", callback_data="new_session"),
+    ]
+])
+
 KB_NEW_SESSION = InlineKeyboardMarkup([
     [InlineKeyboardButton("🔄 Новая оценка", callback_data="new_session")]
 ])
@@ -181,14 +191,19 @@ async def _edit_status(chat_id: int, text: str, context: ContextTypes.DEFAULT_TY
 async def _status_text(chat_id: int) -> str:
     count = len(SESSIONS.get(chat_id, []))
     model = await _model_label(await _get_model(chat_id))
-    return f"📎 Загружено: {_screenshots_label(count)}\n🤖 Модель: {model}"
+    return (
+        f"📎 Загружено: {_screenshots_label(count)}\n"
+        f"🤖 Модель: {model}\n\n"
+        f"Можешь отправить ещё скриншоты или нажми «Оценить», когда все загружены."
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start."""
     await update.message.reply_text(
         "Привет! Я оцениваю клиентские пути по критериальной модели CX.\n\n"
-        "Отправь скриншоты клиентского пути — по одному или альбомом.\n"
+        "Отправь скриншоты клиентского пути — по одному, альбомом или несколькими сообщениями.\n"
+        "Можно отправить один скрин с несколькими экранами (например, из Figma).\n\n"
         "Когда все скрины загружены, нажми «Оценить»."
     )
 
@@ -257,13 +272,19 @@ async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None
         await _edit_status(chat_id, f"Ошибка при анализе: {e}", context)
         return
 
+    LAST_EVALUATIONS[chat_id] = {
+        "screenshots": screenshots,
+        "result": result,
+        "model": model,
+    }
+
     footer = f"\n\n🤖 <i>Модель: {label}</i>"
     result_with_footer = result + footer
 
     if len(result_with_footer) <= 4096:
         await _edit_status(
             chat_id, result_with_footer, context,
-            reply_markup=KB_NEW_SESSION, parse_mode="HTML",
+            reply_markup=KB_AFTER_EVAL, parse_mode="HTML",
         )
     else:
         chunks = [result[i : i + 4096] for i in range(0, len(result), 4096)]
@@ -274,16 +295,71 @@ async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None
             if i == 0:
                 await _edit_status(
                     chat_id, chunk, context, parse_mode="HTML",
-                    reply_markup=KB_NEW_SESSION if is_last else None,
+                    reply_markup=KB_AFTER_EVAL if is_last else None,
                 )
             else:
                 await _send_or_edit(
                     chat_id, chunk, context, parse_mode="HTML",
-                    reply_markup=KB_NEW_SESSION if is_last else None,
+                    reply_markup=KB_AFTER_EVAL if is_last else None,
                     edit=False,
                 )
 
     SESSIONS.pop(chat_id, None)
+
+
+async def _do_improve(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Запускает анализ улучшений через бэкенд."""
+    last = LAST_EVALUATIONS.get(chat_id)
+    if not last:
+        await _send_or_edit(
+            chat_id,
+            "Нет данных для анализа улучшений. Сначала проведи оценку.",
+            context, edit=False,
+        )
+        return
+
+    model = last["model"]
+    label = await _model_label(model)
+
+    await _send_or_edit(
+        chat_id,
+        f"💡 Анализирую возможные улучшения на {label}…",
+        context, edit=False,
+    )
+
+    try:
+        data = await backend_client.improve(
+            last["screenshots"], last["result"], model
+        )
+        result = data["result"]
+    except Exception as e:
+        logger.error(f"Improvement analysis failed: {e}")
+        await _send_or_edit(
+            chat_id, f"Ошибка при анализе улучшений: {e}", context, edit=False,
+        )
+        return
+
+    footer = f"\n\n🤖 <i>Модель: {label}</i>"
+    result_with_footer = result + footer
+
+    if len(result_with_footer) <= 4096:
+        await _send_or_edit(
+            chat_id, result_with_footer, context,
+            reply_markup=KB_NEW_SESSION, parse_mode="HTML", edit=False,
+        )
+    else:
+        chunks = [result[i : i + 4096] for i in range(0, len(result), 4096)]
+        for i, chunk in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            if is_last:
+                chunk += footer
+            await _send_or_edit(
+                chat_id, chunk, context, parse_mode="HTML",
+                reply_markup=KB_NEW_SESSION if is_last else None,
+                edit=False,
+            )
+
+    LAST_EVALUATIONS.pop(chat_id, None)
 
 
 async def evaluate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -346,9 +422,13 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             context, reply_markup=await _kb_after_screenshot(chat_id),
         )
 
+    elif query.data == "improve":
+        await _do_improve(chat_id, context)
+
     elif query.data == "new_session":
         SESSIONS.pop(chat_id, None)
         STATUS_MESSAGES.pop(chat_id, None)
+        LAST_EVALUATIONS.pop(chat_id, None)
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:

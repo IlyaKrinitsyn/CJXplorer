@@ -36,6 +36,25 @@ class EvaluateResponse(BaseModel):
     model: str = Field(..., description="Модель, которая выполнила оценку")
 
 
+class ImproveRequest(BaseModel):
+    """Запрос на анализ улучшений CJ (те же скриншоты + результат оценки)."""
+    screenshots: list[str] = Field(
+        ..., description="Скриншоты в формате base64", min_length=1
+    )
+    evaluation_result: str = Field(
+        ..., description="Текст предыдущей оценки от LLM"
+    )
+    model: str = Field(
+        "openai/gpt-4o", description="Идентификатор LLM-модели для анализа"
+    )
+
+
+class ImproveResponse(BaseModel):
+    """Ответ с рекомендациями по улучшению клиентского пути."""
+    result: str = Field(..., description="Текст рекомендаций от LLM")
+    model: str = Field(..., description="Модель, которая выполнила анализ")
+
+
 class NavigateRequest(BaseModel):
     """Запрос на создание задачи автономной навигации."""
     app_name: str = Field(

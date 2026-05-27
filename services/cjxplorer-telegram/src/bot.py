@@ -432,6 +432,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
     elif query.data == "improve":
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
         await _do_improve(chat_id, context)
 
     elif query.data == "new_session":

@@ -1,10 +1,12 @@
-name: Deploy Telegram Bot
+name: Deploy CJXplorer
 
 on:
   push:
     branches: [main]
     paths:
-      - "services/telegram-bot/**"
+      - "services/cjxplorer-core/**"
+      - "services/cjxplorer-telegram/**"
+      - "docker-compose.yml"
 
   workflow_dispatch:
 
@@ -22,6 +24,5 @@ jobs:
           script: |
             cd ~/CJXplorer
             git pull origin main
-            cd services/telegram-bot
             docker compose up -d --build --force-recreate
             docker image prune -f

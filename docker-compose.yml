@@ -1,0 +1,35 @@
+services:
+  cjxplorer-core:
+    build: services/cjxplorer-core
+    container_name: cjxplorer-core
+    restart: unless-stopped
+    env_file:
+      - services/cjxplorer-core/.env
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cjxplorer-telegram:
+    build: services/cjxplorer-telegram
+    container_name: cjxplorer-telegram
+    restart: unless-stopped
+    env_file:
+      - services/cjxplorer-telegram/.env
+    depends_on:
+      cjxplorer-core:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

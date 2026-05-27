@@ -10,20 +10,9 @@ from openai import AsyncOpenAI
 
 from .config import LLM_API_KEY, LLM_BASE_URL
 from .prompts import SYSTEM_PROMPT
+from .utils import pluralize
 
 client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
-
-
-def _pluralize(n: int, one: str, few: str, many: str) -> str:
-    """Склонение существительного по числительному (русский язык)."""
-    if 11 <= n % 100 <= 19:
-        return f"{n} {many}"
-    mod = n % 10
-    if mod == 1:
-        return f"{n} {one}"
-    if 2 <= mod <= 4:
-        return f"{n} {few}"
-    return f"{n} {many}"
 
 
 async def evaluate_screenshots(screenshots: list[bytes], model: str) -> str:
@@ -37,7 +26,7 @@ async def evaluate_screenshots(screenshots: list[bytes], model: str) -> str:
     Returns:
         Текст оценки в формате HTML для Telegram.
     """
-    count = _pluralize(len(screenshots), "скриншот", "скриншота", "скриншотов")
+    count = pluralize(len(screenshots), "скриншот", "скриншота", "скриншотов")
     user_content = [
         {
             "type": "text",

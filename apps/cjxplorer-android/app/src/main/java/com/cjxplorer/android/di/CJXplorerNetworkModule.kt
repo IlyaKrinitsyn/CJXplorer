@@ -1,6 +1,7 @@
 package com.cjxplorer.android.di
 
-import com.cjxplorer.android.BuildConfig
+import com.cjxplorer.android.data.settings.CJXplorerSettingsRepository
+import com.cjxplorer.android.data.websocket.CJXplorerDeviceClient
 import com.cjxplorer.android.data.websocket.CJXplorerWebSocketClient
 import dagger.Module
 import dagger.Provides
@@ -8,7 +9,6 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
-import javax.inject.Named
 import javax.inject.Singleton
 
 @Module
@@ -23,14 +23,18 @@ object CJXplorerNetworkModule {
             .build()
 
     @Provides
-    @Named("wsBaseUrl")
-    fun provideWsBaseUrl(): String = BuildConfig.WS_BASE_URL
-
-    @Provides
     @Singleton
     fun provideWebSocketClient(
         okHttpClient: OkHttpClient,
-        @Named("wsBaseUrl") wsBaseUrl: String
+        settingsRepository: CJXplorerSettingsRepository
     ): CJXplorerWebSocketClient =
-        CJXplorerWebSocketClient(okHttpClient, wsBaseUrl)
+        CJXplorerWebSocketClient(okHttpClient, settingsRepository)
+
+    @Provides
+    @Singleton
+    fun provideDeviceClient(
+        okHttpClient: OkHttpClient,
+        settingsRepository: CJXplorerSettingsRepository
+    ): CJXplorerDeviceClient =
+        CJXplorerDeviceClient(okHttpClient, settingsRepository)
 }

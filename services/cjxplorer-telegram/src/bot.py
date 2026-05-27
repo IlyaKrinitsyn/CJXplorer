@@ -262,6 +262,21 @@ async def _send_chunked(chat_id: int, result: str, footer: str,
                 )
 
 
+async def _refresh_status_below(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удаляет старое статусное сообщение и создаёт новое ниже последнего скриншота."""
+    old_msg_id = STATUS_MESSAGES.pop(chat_id, None)
+    if old_msg_id:
+        try:
+            await context.bot.delete_message(chat_id, old_msg_id)
+        except Exception:
+            pass
+    await _send_or_edit(
+        chat_id, await _status_text(chat_id),
+        context, reply_markup=await _kb_after_screenshot(chat_id),
+        edit=False,
+    )
+
+
 async def _remove_buttons(query) -> None:
     """Убирает кнопки с сообщения, на котором нажали."""
     try:
@@ -309,10 +324,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     file = await photo.get_file()
     data = await file.download_as_bytearray()
     await _save_screenshot(chat_id, bytes(data))
-    await _edit_status(
-        chat_id, await _status_text(chat_id),
-        context, reply_markup=await _kb_after_screenshot(chat_id),
-    )
+    await _refresh_status_below(chat_id, context)
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -325,10 +337,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     file = await doc.get_file()
     data = await file.download_as_bytearray()
     await _save_screenshot(chat_id, bytes(data))
-    await _edit_status(
-        chat_id, await _status_text(chat_id),
-        context, reply_markup=await _kb_after_screenshot(chat_id),
-    )
+    await _refresh_status_below(chat_id, context)
 
 
 async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -436,12 +445,20 @@ async def _nav_start(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     device_connected = await backend_client.get_device_status()
 
     if not device_connected:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Попробовать снова", callback_data="nav_start")],
+            [
+                InlineKeyboardButton("📸 Оценка CJ", callback_data="mode_evaluate"),
+                InlineKeyboardButton("← В начало", callback_data="go_home"),
+            ],
+        ])
         await _send_or_edit(
             chat_id,
             "🔍 <b>Исследование CJ</b>\n\n"
             "⚠️ Android-устройство не подключено.\n"
             "Запусти приложение CJXplorer на телефоне и попробуй снова.",
             context, parse_mode="HTML", edit=False,
+            reply_markup=kb,
         )
         return
 
@@ -455,7 +472,8 @@ async def _nav_start(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• Открытие вклада в Сбербанк\n"
         "• Оформление ОСАГО в Тинькофф</i>\n\n"
         "⚠️ Пока поддерживается <b>один клиентский путь в одном приложении</b>. "
-        "Сравнительный анализ нескольких приложений — в следующих версиях.",
+        "Сравнительный анализ нескольких приложений — в следующих версиях.\n\n"
+        "🚧 <i>Разработка в процессе</i>",
         context, parse_mode="HTML", edit=False,
         reply_markup=KB_NAV_CANCEL,
     )
@@ -720,13 +738,15 @@ async def _nav_cancel(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         await _edit_status(
-            chat_id, "🔍 Исследование отменено.",
-            context, reply_markup=None,
+            chat_id,
+            "🔍 Исследование отменено.\n\nЧто делаем дальше?",
+            context, reply_markup=KB_START,
         )
     except Exception:
         await _send_or_edit(
-            chat_id, "🔍 Исследование отменено.",
-            context, edit=False,
+            chat_id,
+            "🔍 Исследование отменено.\n\nЧто делаем дальше?",
+            context, edit=False, reply_markup=KB_START,
         )
 
 

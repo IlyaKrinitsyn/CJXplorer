@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MVP: сервер на VDS часто без TLS, адрес вводится вручную (ws://IP:port).
+  Android 9+ по умолчанию блокирует cleartext — разрешаем для отладки и внутренних стендов.
+  Для продакшена используйте wss:// и уберите cleartextTrafficPermitted.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

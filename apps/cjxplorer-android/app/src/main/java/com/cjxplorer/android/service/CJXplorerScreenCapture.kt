@@ -1,6 +1,5 @@
 package com.cjxplorer.android.service
 
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -10,9 +9,14 @@ import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import android.util.Log
 import java.io.ByteArrayOutputStream
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
  * Обёртка над MediaProjection для захвата скриншотов.
@@ -24,6 +28,8 @@ class CJXplorerScreenCapture(private val context: Context) {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
 
+    private val handler = Handler(Looper.getMainLooper())
+
     val projectionManager: MediaProjectionManager
         get() = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
@@ -33,22 +39,84 @@ class CJXplorerScreenCapture(private val context: Context) {
         mediaProjection = projectionManager.getMediaProjection(resultCode, data)
     }
 
-    fun capture(width: Int, height: Int, densityDpi: Int): String? {
-        val projection = mediaProjection ?: return null
+    val isReady: Boolean get() = mediaProjection != null
 
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        virtualDisplay = projection.createVirtualDisplay(
-            "CJXplorerCapture",
-            width, height, densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader!!.surface, null, null
-        )
+    /**
+     * Захватывает один кадр экрана и возвращает JPEG base64.
+     * Создаёт VirtualDisplay, дожидается кадра через OnImageAvailableListener,
+     * а затем сразу освобождает VirtualDisplay — MediaProjection остаётся живой.
+     */
+    suspend fun capture(width: Int, height: Int, densityDpi: Int): String =
+        suspendCancellableCoroutine { cont ->
+            val projection = mediaProjection
+            if (projection == null) {
+                cont.resumeWithException(IllegalStateException("MediaProjection not initialized"))
+                return@suspendCancellableCoroutine
+            }
 
-        // TODO: реализовать асинхронный захват с ImageReader.OnImageAvailableListener
-        // Сейчас — заглушка
-        Log.i(TAG, "Screen capture requested (${width}x${height})")
-        return null
-    }
+            val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+            imageReader = reader
+
+            val display = projection.createVirtualDisplay(
+                "CJXplorerCapture",
+                width, height, densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader.surface, null, handler
+            )
+            virtualDisplay = display
+
+            reader.setOnImageAvailableListener({ ir ->
+                val image = ir.acquireLatestImage()
+                if (image != null) {
+                    try {
+                        val plane = image.planes[0]
+                        val buffer = plane.buffer
+                        val pixelStride = plane.pixelStride
+                        val rowStride = plane.rowStride
+                        val rowPadding = rowStride - pixelStride * width
+
+                        val bitmap = Bitmap.createBitmap(
+                            width + rowPadding / pixelStride,
+                            height,
+                            Bitmap.Config.ARGB_8888
+                        )
+                        bitmap.copyPixelsFromBuffer(buffer)
+
+                        val cropped = if (bitmap.width != width) {
+                            Bitmap.createBitmap(bitmap, 0, 0, width, height).also {
+                                bitmap.recycle()
+                            }
+                        } else {
+                            bitmap
+                        }
+
+                        val base64 = bitmapToBase64(cropped)
+                        cropped.recycle()
+
+                        display.release()
+                        virtualDisplay = null
+                        reader.setOnImageAvailableListener(null, null)
+                        reader.close()
+                        imageReader = null
+
+                        if (cont.isActive) cont.resume(base64)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error capturing image", e)
+                        if (cont.isActive) cont.resumeWithException(e)
+                    } finally {
+                        image.close()
+                    }
+                }
+            }, handler)
+
+            cont.invokeOnCancellation {
+                display.release()
+                virtualDisplay = null
+                reader.setOnImageAvailableListener(null, null)
+                reader.close()
+                imageReader = null
+            }
+        }
 
     fun release() {
         virtualDisplay?.release()

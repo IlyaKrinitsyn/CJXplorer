@@ -23,6 +23,30 @@
 
 ---
 
+## Инкремент 1.5: Nginx reverse proxy + TLS
+
+**Цель:** закрыть все сервисы за nginx, получить TLS (wss:// + https://) вместо cleartext.
+
+**Что делает:**
+- Nginx как единая точка входа: принимает HTTPS/WSS снаружи, проксирует в cjxplorer-core по HTTP/WS внутри Docker-сети
+- Let's Encrypt сертификат через certbot (или Caddy как альтернатива)
+- cjxplorer-core перестаёт быть доступен напрямую, только через nginx
+- Android-приложение подключается по `wss://домен` вместо `ws://IP:port`
+- Убирается `cleartextTrafficPermitted` из network_security_config.xml
+
+**Что нужно:**
+- Домен, направленный на IP VDS
+- Контейнер nginx + certbot в docker-compose.yml
+- Конфиг nginx: reverse proxy для HTTP, WebSocket upgrade для /ws/*
+
+**Стек:** Nginx, Let's Encrypt / certbot (или Caddy)
+
+**Блоки на схеме:** + Nginx (reverse proxy, TLS termination) перед cjxplorer-core
+
+**Результат:** весь трафик (скриншоты, ноды, управление) защищён TLS. Можно безопасно использовать с публичного IP.
+
+---
+
 ## Инкремент 2: Comparison Agent
 
 **Цель:** сравнение нескольких CJ между собой.

@@ -16,6 +16,7 @@ flowchart TD
     end
 
     subgraph CORE["Внешний контур — облако"]
+        NGINX[Nginx — reverse proxy, TLS]
         ORCH[Task Orchestrator — Agent/LangGraph]
         QUEUE[Task Queue — Redis/RabbitMQ]
         NAV[Навигационный слой]
@@ -46,8 +47,9 @@ flowchart TD
         IMPROVE[Model Improvement]
     end
 
-    TG -->|"webhook"| ORCH
-    WEBUI -->|"REST"| ORCH
+    TG -->|"webhook"| NGINX
+    WEBUI -->|"REST"| NGINX
+    NGINX -->|"proxy"| ORCH
     ORCH -->|"task dispatch"| QUEUE
     QUEUE -->|"async"| NAV
     QUEUE -->|"async"| EVAL
@@ -162,6 +164,12 @@ flowchart TD
 |-----------|-----|----------|
 | **Telegram Bot** | Service / Python | webhook / REST |
 | **Web UI** | SPA | REST API |
+
+### Инфраструктура
+
+| Компонент | Тип | Протокол |
+|-----------|-----|----------|
+| **Nginx** | Reverse proxy | HTTPS/WSS (вход) → HTTP/WS (внутри Docker) |
 
 ### Оркестрация
 

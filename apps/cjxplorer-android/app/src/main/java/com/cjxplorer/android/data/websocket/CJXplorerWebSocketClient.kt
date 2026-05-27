@@ -1,6 +1,7 @@
 package com.cjxplorer.android.data.websocket
 
 import android.util.Log
+import com.cjxplorer.android.data.settings.CJXplorerSettingsRepository
 import com.cjxplorer.android.domain.model.NavigationAction
 import com.cjxplorer.android.domain.model.ScrollDirection
 import kotlinx.coroutines.channels.Channel
@@ -18,7 +19,7 @@ import okhttp3.WebSocketListener
 
 class CJXplorerWebSocketClient(
     private val okHttpClient: OkHttpClient,
-    private val wsBaseUrl: String
+    private val settingsRepository: CJXplorerSettingsRepository
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -31,8 +32,9 @@ class CJXplorerWebSocketClient(
     val actions: Flow<NavigationAction> = _actions.receiveAsFlow()
 
     fun connect(taskId: String) {
+        val baseUrl = settingsRepository.getServerUrl()
         val request = Request.Builder()
-            .url("$wsBaseUrl/ws/navigate/$taskId")
+            .url("$baseUrl/ws/navigate/$taskId")
             .build()
 
         webSocket = okHttpClient.newWebSocket(request, object : WebSocketListener() {

@@ -66,6 +66,31 @@ def _filter_nodes(nodes: list[dict], depth: int = 0) -> list[dict]:
     return result
 
 
+def _get_phase_hint(action_history: list[dict], step: int) -> str:
+    """Определяет фазу навигации и возвращает подсказку для промпта."""
+    if step <= 1:
+        return "ФАЗА: Найди и открой целевое приложение. Если видишь его иконку — КЛИКНИ по ней.\n"
+
+    has_click = any(a.get("action") == "click" for a in action_history)
+    only_scrolls = all(
+        a.get("action") in ("scroll", "back") for a in action_history
+    )
+
+    if only_scrolls:
+        scroll_count = sum(1 for a in action_history if a.get("action") == "scroll")
+        if scroll_count >= 3:
+            return (
+                "ФАЗА: Приложение не найдено после нескольких скроллов. "
+                "Если не видишь его — ответь done.\n"
+            )
+        return "ФАЗА: Ищем приложение. Если видишь его иконку — КЛИКНИ, не скролль мимо!\n"
+
+    if has_click:
+        return "ФАЗА: Приложение открыто. Выполняй шаги клиентского пути.\n"
+
+    return ""
+
+
 def _format_action_history(action_history: list[dict]) -> str:
     """Форматирует историю действий в читаемый текст для промпта."""
     if not action_history:
@@ -90,7 +115,10 @@ def _format_action_history(action_history: list[dict]) -> str:
 
 
 def _parse_llm_response(text: str) -> dict | None:
-    """Извлекает JSON из ответа LLM, даже если он обёрнут в markdown."""
+    """
+    Извлекает JSON из ответа LLM.
+    Поддерживает: чистый JSON, markdown-блок, JSON внутри текста.
+    """
     text = text.strip()
 
     if text.startswith("```"):
@@ -113,6 +141,16 @@ def _parse_llm_response(text: str) -> dict | None:
             return parsed
     except json.JSONDecodeError:
         pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            parsed = json.loads(text[start:end + 1])
+            if isinstance(parsed, dict) and parsed.get("action") in VALID_ACTIONS:
+                return parsed
+        except json.JSONDecodeError:
+            pass
 
     return None
 
@@ -154,18 +192,19 @@ async def decide_next_action(
         f"nodes_json={len(nodes_json)} chars"
     )
 
-    history_text = _format_action_history(action_history or [])
+    history = action_history or []
+    history_text = _format_action_history(history)
+    phase_hint = _get_phase_hint(history, step)
 
     user_text = NAV_USER_TEMPLATE.format(
         task_description=task_description,
         step=step,
+        phase_hint=phase_hint,
         action_history=history_text,
         nodes_json=nodes_json,
     )
 
-    user_content: list[dict] = [
-        {"type": "text", "text": user_text},
-    ]
+    user_content: list[dict] = []
 
     if screenshot_b64:
         user_content.append({
@@ -178,6 +217,8 @@ async def decide_next_action(
         logger.info(f"[NAV] Step {step}: screenshot attached, {len(screenshot_b64)} chars base64")
     else:
         logger.warning(f"[NAV] Step {step}: no screenshot, text-only LLM call")
+
+    user_content.append({"type": "text", "text": user_text})
 
     logger.info(
         f"[NAV] Step {step}: user_text={len(user_text)} chars, "

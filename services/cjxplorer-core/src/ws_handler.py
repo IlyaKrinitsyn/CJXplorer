@@ -3,6 +3,9 @@
 
 Управляет циклом взаимодействия с Android-устройством:
 получение состояния экрана -> решение LLM -> отправка действия.
+
+После завершения навигации скриншоты остаются в кеше задачи (task.screenshots).
+Оценку запускает пользователь через REST API.
 """
 
 import asyncio
@@ -12,7 +15,6 @@ import logging
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .config import NAV_MAX_STEPS
-from .eval_agent import evaluate_screenshots
 from .models import TaskStatus
 from .nav_agent import decide_next_action
 from .tasks import NavigationTask
@@ -32,6 +34,8 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
 
     При необходимости ввода данных (логин/пароль) —
     ставит задачу на паузу и ждёт input от пользователя через REST API.
+
+    По завершении скриншоты остаются в task.screenshots для последующей оценки.
     """
     await websocket.accept()
     task.status = TaskStatus.RUNNING
@@ -62,7 +66,10 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
                 task_description=f"{task.app_name}: {task.journey_description}",
                 step=task.current_step,
                 model=task.model,
+                action_history=task.action_history,
             )
+
+            task.action_history.append(action)
 
             if action.get("action") == "done":
                 await websocket.send_json({"type": "done"})
@@ -74,14 +81,10 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
 
             await websocket.send_json({"type": "action", **action})
 
-        if task.screenshots:
-            task.status = TaskStatus.EVALUATING
-            logger.info(
-                f"Задача {task.task_id}: навигация завершена, "
-                f"оценка {len(task.screenshots)} скриншотов"
-            )
-            task.result = await evaluate_screenshots(task.screenshots, task.model)
-
+        logger.info(
+            f"Задача {task.task_id}: навигация завершена, "
+            f"{len(task.screenshots)} скриншотов в кеше"
+        )
         task.status = TaskStatus.DONE
 
     except WebSocketDisconnect:

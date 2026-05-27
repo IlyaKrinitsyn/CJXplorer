@@ -19,8 +19,10 @@ from .models import (
     ImproveRequest,
     ImproveResponse,
     NavigateRequest,
+    TaskEvaluateRequest,
     TaskInputRequest,
     TaskResponse,
+    TaskScreenshotsResponse,
     TaskStatus,
 )
 from .tasks import create_task, get_task
@@ -118,6 +120,71 @@ async def provide_input(task_id: str, request: TaskInputRequest):
     task.input_value = request.value
     task.input_event.set()
     return TaskResponse(**task.to_dict())
+
+
+@app.get("/tasks/{task_id}/screenshots", response_model=TaskScreenshotsResponse)
+async def get_task_screenshots(task_id: str):
+    """Возвращает скриншоты навигационной задачи из runtime-кеша."""
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    if task.status not in (TaskStatus.DONE, TaskStatus.EVALUATING):
+        raise HTTPException(400, f"Навигация ещё не завершена (статус: {task.status.value})")
+    if not task.screenshots:
+        raise HTTPException(404, "Скриншоты отсутствуют")
+
+    screenshots_b64 = [
+        base64.b64encode(s).decode("utf-8") for s in task.screenshots
+    ]
+    return TaskScreenshotsResponse(
+        task_id=task_id,
+        screenshots=screenshots_b64,
+        count=len(screenshots_b64),
+    )
+
+
+@app.post("/tasks/{task_id}/evaluate", response_model=EvaluateResponse)
+async def evaluate_task(task_id: str, request: TaskEvaluateRequest):
+    """Оценка CJ из кеша навигационной задачи (без повторной отправки скриншотов)."""
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    if not task.screenshots:
+        raise HTTPException(400, "Нет скриншотов для оценки")
+
+    task.status = TaskStatus.EVALUATING
+    try:
+        result = await evaluate_screenshots(task.screenshots, request.model)
+        task.result = result
+        task.status = TaskStatus.DONE
+    except Exception as e:
+        logger.error(f"Task {task_id} evaluation failed: {e}")
+        task.status = TaskStatus.DONE
+        raise HTTPException(500, f"Ошибка при анализе: {e}")
+
+    return EvaluateResponse(result=result, model=request.model)
+
+
+@app.post("/tasks/{task_id}/improve", response_model=ImproveResponse)
+async def improve_task(task_id: str, request: TaskEvaluateRequest):
+    """Рекомендации по улучшению CJ из кеша навигационной задачи."""
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(404, "Задача не найдена")
+    if not task.screenshots:
+        raise HTTPException(400, "Нет скриншотов для анализа")
+    if not task.result:
+        raise HTTPException(400, "Сначала выполните оценку (POST /tasks/{task_id}/evaluate)")
+
+    try:
+        result = await suggest_improvements(
+            task.screenshots, task.result, request.model
+        )
+    except Exception as e:
+        logger.error(f"Task {task_id} improvement failed: {e}")
+        raise HTTPException(500, f"Ошибка при анализе улучшений: {e}")
+
+    return ImproveResponse(result=result, model=request.model)
 
 
 @app.websocket("/ws/navigate/{task_id}")

@@ -89,6 +89,22 @@ class TaskInputRequest(BaseModel):
     value: str = Field(..., description="Значение, введённое пользователем")
 
 
+class TaskScreenshotsResponse(BaseModel):
+    """Скриншоты навигационной задачи из runtime-кеша."""
+    task_id: str = Field(..., description="Уникальный идентификатор задачи")
+    screenshots: list[str] = Field(
+        ..., description="Скриншоты в формате base64"
+    )
+    count: int = Field(..., description="Количество скриншотов")
+
+
+class TaskEvaluateRequest(BaseModel):
+    """Запрос на оценку CJ из кеша навигационной задачи."""
+    model: str = Field(
+        "openai/gpt-4o", description="Идентификатор LLM-модели для оценки"
+    )
+
+
 # --- WebSocket-протокол ---
 
 

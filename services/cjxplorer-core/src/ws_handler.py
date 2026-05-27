@@ -42,9 +42,14 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
     logger.info(f"Устройство подключено к задаче {task.task_id}")
 
     try:
+        if task.app_name:
+            task_text = f"Открой приложение {task.app_name} и выполни: {task.journey_description}"
+        else:
+            task_text = task.journey_description
+
         await websocket.send_json({
             "type": "start",
-            "task": f"Открой приложение {task.app_name} и выполни: {task.journey_description}",
+            "task": task_text,
         })
 
         while task.current_step < NAV_MAX_STEPS:
@@ -60,10 +65,15 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
             if screenshot_b64:
                 task.screenshots.append(base64.b64decode(screenshot_b64))
 
+            if task.app_name:
+                task_desc = f"{task.app_name}: {task.journey_description}"
+            else:
+                task_desc = task.journey_description
+
             action = await decide_next_action(
                 screenshot_b64=screenshot_b64,
                 nodes=nodes,
-                task_description=f"{task.app_name}: {task.journey_description}",
+                task_description=task_desc,
                 step=task.current_step,
                 model=task.model,
                 action_history=task.action_history,

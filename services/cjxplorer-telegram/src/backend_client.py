@@ -96,3 +96,38 @@ async def provide_task_input(task_id: str, value: str) -> dict:
     resp = await _get_client().post(f"/tasks/{task_id}/input", json={"value": value})
     resp.raise_for_status()
     return resp.json()
+
+
+async def get_task_screenshots(task_id: str) -> dict:
+    """Получить скриншоты завершённой навигационной задачи из runtime-кеша."""
+    resp = await _get_client().get(f"/tasks/{task_id}/screenshots")
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def evaluate_task(task_id: str, model: str) -> dict:
+    """Запустить оценку CJ из кеша навигационной задачи."""
+    resp = await _get_client().post(
+        f"/tasks/{task_id}/evaluate", json={"model": model}
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def improve_task(task_id: str, model: str) -> dict:
+    """Запустить анализ улучшений CJ из кеша навигационной задачи."""
+    resp = await _get_client().post(
+        f"/tasks/{task_id}/improve", json={"model": model}
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+async def get_device_status() -> bool:
+    """Проверить, подключено ли Android-устройство."""
+    try:
+        resp = await _get_client().get("/device/status")
+        resp.raise_for_status()
+        return resp.json().get("connected", False)
+    except Exception:
+        return False

@@ -3,15 +3,18 @@ Telegram-бот CJXplorer.
 
 Принимает скриншоты клиентского пути от пользователя,
 отправляет их на оценку через бэкенд и возвращает результат.
+Поддерживает режим исследования CJ — автономный проход на Android.
 
 Весь флоу (загрузка -> анализ -> результат) происходит
 в одном редактируемом сообщении.
 """
 
+import asyncio
+import base64
 import logging
 import time
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -42,17 +45,22 @@ USER_MODELS: dict[int, str] = {}
 LAST_EVALUATIONS: dict[int, dict] = {}
 """Результат последней оценки для каждого чата (screenshots + result + model)."""
 
+NAV_SESSIONS: dict[int, dict] = {}
+"""Состояние навигационной сессии по chat_id.
+Ключи: state, task_id, query, poll_task.
+state: awaiting_query | polling | done
+"""
+
 _MODELS_CACHE: dict | None = None
-"""Кеш моделей с бэкенда."""
 _MODELS_CACHE_TS: float = 0.0
-"""Время последнего обновления кеша (monotonic)."""
 _MODELS_CACHE_TTL: float = 300.0
-"""TTL кеша моделей в секундах (5 минут)."""
 
 _FALLBACK_MODELS: dict = {
     "models": {"openai/gpt-4o": "GPT-4o"},
     "default": "openai/gpt-4o",
 }
+
+NAV_POLL_INTERVAL = 3.0
 
 
 async def _get_models() -> dict:
@@ -83,7 +91,6 @@ async def _default_model() -> str:
 
 
 def _pluralize(n: int, one: str, few: str, many: str) -> str:
-    """Склонение существительного по числительному (русский язык)."""
     if 11 <= n % 100 <= 19:
         return f"{n} {many}"
     mod = n % 10
@@ -107,8 +114,33 @@ async def _model_label(model_id: str) -> str:
     return models.get(model_id, model_id)
 
 
+# --- Клавиатуры ---
+
+
+KB_START = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("📸 Оценка CJ", callback_data="mode_evaluate"),
+        InlineKeyboardButton("🔍 Исследование CJ", callback_data="nav_start"),
+    ]
+])
+
+KB_AFTER_EVAL = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("💡 Как улучшить?", callback_data="improve"),
+        InlineKeyboardButton("🔄 Новая оценка", callback_data="new_session"),
+    ]
+])
+
+KB_NEW_SESSION = InlineKeyboardMarkup([
+    [InlineKeyboardButton("🔄 Новая оценка", callback_data="new_session")]
+])
+
+KB_NAV_CANCEL = InlineKeyboardMarkup([
+    [InlineKeyboardButton("❌ Отмена", callback_data="nav_cancel")]
+])
+
+
 async def _kb_after_screenshot(chat_id: int) -> InlineKeyboardMarkup:
-    """Клавиатура после загрузки скриншота."""
     model = await _get_model(chat_id)
     label = await _model_label(model)
     return InlineKeyboardMarkup([
@@ -124,20 +156,7 @@ async def _kb_after_screenshot(chat_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-KB_AFTER_EVAL = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton("💡 Как улучшить?", callback_data="improve"),
-        InlineKeyboardButton("🔄 Новая оценка", callback_data="new_session"),
-    ]
-])
-
-KB_NEW_SESSION = InlineKeyboardMarkup([
-    [InlineKeyboardButton("🔄 Новая оценка", callback_data="new_session")]
-])
-
-
 async def _kb_model_picker() -> InlineKeyboardMarkup:
-    """Клавиатура выбора LLM-модели."""
     models = await _available_models()
     buttons = [
         [InlineKeyboardButton(label, callback_data=f"model:{model_id}")]
@@ -147,9 +166,11 @@ async def _kb_model_picker() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+# --- Утилиты сообщений ---
+
+
 async def _send_or_edit(chat_id: int, text: str, context: ContextTypes.DEFAULT_TYPE,
                         reply_markup=None, parse_mode=None, edit: bool = True) -> None:
-    """Отправляет или редактирует сообщение с fallback при ошибке парсинга HTML."""
     from telegram.error import BadRequest
 
     for mode in ([parse_mode, None] if parse_mode else [None]):
@@ -198,14 +219,71 @@ async def _status_text(chat_id: int) -> str:
     )
 
 
+async def _build_footer(label: str) -> str:
+    core_version = await backend_client.get_backend_version()
+    return (
+        f"\n\n🤖 <i>Модель: {label}</i>"
+        f"\n<i>core=v{core_version} · telegram=v{VERSION}</i>"
+    )
+
+
+async def _send_chunked(chat_id: int, result: str, footer: str,
+                        context: ContextTypes.DEFAULT_TYPE,
+                        reply_markup=None, edit_first: bool = True) -> None:
+    result_with_footer = result + footer
+    if len(result_with_footer) <= 4096:
+        if edit_first:
+            await _edit_status(
+                chat_id, result_with_footer, context,
+                reply_markup=reply_markup, parse_mode="HTML",
+            )
+        else:
+            await _send_or_edit(
+                chat_id, result_with_footer, context,
+                reply_markup=reply_markup, parse_mode="HTML", edit=False,
+            )
+    else:
+        chunks = [result[i: i + 4096] for i in range(0, len(result), 4096)]
+        for i, chunk in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            if is_last:
+                chunk += footer
+            if i == 0 and edit_first:
+                await _edit_status(
+                    chat_id, chunk, context, parse_mode="HTML",
+                    reply_markup=reply_markup if is_last else None,
+                )
+            else:
+                await _send_or_edit(
+                    chat_id, chunk, context, parse_mode="HTML",
+                    reply_markup=reply_markup if is_last else None,
+                    edit=False,
+                )
+
+
+async def _remove_buttons(query) -> None:
+    """Убирает кнопки с сообщения, на котором нажали."""
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+# --- /start ---
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /start."""
     await update.message.reply_text(
         "Привет! Я оцениваю клиентские пути по критериальной модели CX.\n\n"
-        "Отправь скриншоты клиентского пути — по одному, альбомом или несколькими сообщениями.\n"
-        "Можно отправить один скрин с несколькими экранами (например, из Figma).\n\n"
-        "Когда все скрины загружены, нажми «Оценить»."
+        "📸 <b>Оценка CJ</b> — отправь скриншоты и получи оценку.\n"
+        "🔍 <b>Исследование CJ</b> — автоматический проход пути на Android.\n\n"
+        "Выбери режим работы:",
+        parse_mode="HTML",
+        reply_markup=KB_START,
     )
+
+
+# --- Оценка скриншотов ---
 
 
 async def _save_screenshot(chat_id: int, data: bytes) -> int:
@@ -216,7 +294,6 @@ async def _save_screenshot(chat_id: int, data: bytes) -> int:
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик входящих фото."""
     chat_id = update.effective_chat.id
     photo = update.message.photo[-1]
     file = await photo.get_file()
@@ -229,7 +306,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик файлов-изображений."""
     doc = update.message.document
     if not doc.mime_type or not doc.mime_type.startswith("image/"):
         await update.message.reply_text("Отправь изображение (скриншот экрана).")
@@ -245,19 +321,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
-async def _build_footer(label: str) -> str:
-    """Формирует footer с моделью и версиями сервисов."""
-    core_version = await backend_client.get_backend_version()
-    return (
-        f"\n\n🤖 <i>Модель: {label}</i>"
-        f"\n<i>core=v{core_version} · telegram=v{VERSION}</i>"
-    )
-
-
 async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Запускает оценку через бэкенд."""
     screenshots = SESSIONS.get(chat_id, [])
-
     if not screenshots:
         await _edit_status(
             chat_id, "Нет загруженных скриншотов. Сначала отправь скрины CJ.", context
@@ -288,36 +353,11 @@ async def _do_evaluate(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None
     }
 
     footer = await _build_footer(label)
-    result_with_footer = result + footer
-
-    if len(result_with_footer) <= 4096:
-        await _edit_status(
-            chat_id, result_with_footer, context,
-            reply_markup=KB_AFTER_EVAL, parse_mode="HTML",
-        )
-    else:
-        chunks = [result[i : i + 4096] for i in range(0, len(result), 4096)]
-        for i, chunk in enumerate(chunks):
-            is_last = i == len(chunks) - 1
-            if is_last:
-                chunk += footer
-            if i == 0:
-                await _edit_status(
-                    chat_id, chunk, context, parse_mode="HTML",
-                    reply_markup=KB_AFTER_EVAL if is_last else None,
-                )
-            else:
-                await _send_or_edit(
-                    chat_id, chunk, context, parse_mode="HTML",
-                    reply_markup=KB_AFTER_EVAL if is_last else None,
-                    edit=False,
-                )
-
+    await _send_chunked(chat_id, result, footer, context, reply_markup=KB_AFTER_EVAL)
     SESSIONS.pop(chat_id, None)
 
 
 async def _do_improve(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Запускает анализ улучшений через бэкенд."""
     last = LAST_EVALUATIONS.get(chat_id)
     if not last:
         await _send_or_edit(
@@ -349,35 +389,345 @@ async def _do_improve(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     footer = await _build_footer(label)
-    result_with_footer = result + footer
-
-    if len(result_with_footer) <= 4096:
-        await _send_or_edit(
-            chat_id, result_with_footer, context,
-            reply_markup=KB_NEW_SESSION, parse_mode="HTML", edit=False,
-        )
-    else:
-        chunks = [result[i : i + 4096] for i in range(0, len(result), 4096)]
-        for i, chunk in enumerate(chunks):
-            is_last = i == len(chunks) - 1
-            if is_last:
-                chunk += footer
-            await _send_or_edit(
-                chat_id, chunk, context, parse_mode="HTML",
-                reply_markup=KB_NEW_SESSION if is_last else None,
-                edit=False,
-            )
-
+    await _send_chunked(
+        chat_id, result, footer, context,
+        reply_markup=KB_NEW_SESSION, edit_first=False,
+    )
     LAST_EVALUATIONS.pop(chat_id, None)
 
 
+# --- Исследование CJ ---
+
+
+def _nav_status_text(nav: dict) -> str:
+    status = nav.get("status", "?")
+    step = nav.get("current_step", 0)
+    query = nav.get("query", "?")
+
+    status_labels = {
+        "waiting_device": "⏳ Ожидание устройства…",
+        "running": f"🔄 Исследование… (шаг {step})",
+        "input_needed": "⌨️ Требуется ввод данных",
+        "evaluating": "📊 Оценка результатов…",
+        "done": "✅ Исследование завершено",
+        "failed": "❌ Ошибка исследования",
+    }
+    status_text = status_labels.get(status, status)
+
+    return (
+        f"🔍 <b>Исследование CJ</b>\n\n"
+        f"📋 {query}\n\n"
+        f"{status_text}"
+    )
+
+
+async def _nav_start(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Начинает исследование CJ — проверяет устройство и просит описать задачу."""
+    device_connected = await backend_client.get_device_status()
+
+    if not device_connected:
+        await _send_or_edit(
+            chat_id,
+            "🔍 <b>Исследование CJ</b>\n\n"
+            "⚠️ Android-устройство не подключено.\n"
+            "Запусти приложение CJXplorer на телефоне и попробуй снова.",
+            context, parse_mode="HTML", edit=False,
+        )
+        return
+
+    NAV_SESSIONS[chat_id] = {"state": "awaiting_query"}
+    await _send_or_edit(
+        chat_id,
+        "🔍 <b>Исследование CJ</b>\n\n"
+        "Опиши, какой клиентский путь исследовать и в каком приложении.\n\n"
+        "<i>Например:\n"
+        "• Покупка мандаринов в Яндекс.Еда\n"
+        "• Открытие вклада в Сбербанк\n"
+        "• Оформление ОСАГО в Тинькофф</i>\n\n"
+        "⚠️ Пока поддерживается <b>один клиентский путь в одном приложении</b>. "
+        "Сравнительный анализ нескольких приложений — в следующих версиях.",
+        context, parse_mode="HTML", edit=False,
+        reply_markup=KB_NAV_CANCEL,
+    )
+
+
+async def _nav_handle_text(chat_id: int, text: str,
+                           context: ContextTypes.DEFAULT_TYPE) -> None:
+    nav = NAV_SESSIONS.get(chat_id)
+    if not nav:
+        return
+
+    if nav["state"] != "awaiting_query":
+        return
+
+    nav["query"] = text
+    nav["state"] = "polling"
+    model = await _get_model(chat_id)
+
+    await _send_or_edit(
+        chat_id,
+        f"🔍 <b>Исследование CJ</b>\n\n"
+        f"📋 {text}\n\n"
+        f"⏳ Создаю задачу…",
+        context, parse_mode="HTML", edit=False,
+    )
+
+    try:
+        task_data = await backend_client.create_navigation_task(
+            "", text, model
+        )
+        nav["task_id"] = task_data["task_id"]
+        nav["model"] = model
+    except Exception as e:
+        logger.error(f"Failed to create nav task: {e}")
+        await _send_or_edit(
+            chat_id, f"Ошибка при создании задачи: {e}",
+            context, edit=False,
+        )
+        NAV_SESSIONS.pop(chat_id, None)
+        return
+
+    poll_task = asyncio.create_task(
+        _poll_navigation(chat_id, context)
+    )
+    nav["poll_task"] = poll_task
+
+
+async def _poll_navigation(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    nav = NAV_SESSIONS.get(chat_id)
+    if not nav or "task_id" not in nav:
+        return
+
+    task_id = nav["task_id"]
+    last_status = ""
+    last_step = -1
+
+    try:
+        while True:
+            await asyncio.sleep(NAV_POLL_INTERVAL)
+
+            nav = NAV_SESSIONS.get(chat_id)
+            if not nav or nav.get("state") == "cancelled":
+                return
+
+            try:
+                task_data = await backend_client.get_task_status(task_id)
+            except Exception as e:
+                logger.error(f"Poll error for task {task_id}: {e}")
+                continue
+
+            status = task_data.get("status", "?")
+            step = task_data.get("current_step", 0)
+
+            if status != last_status or step != last_step:
+                last_status = status
+                last_step = step
+                nav["status"] = status
+                nav["current_step"] = step
+
+                try:
+                    await _edit_status(
+                        chat_id, _nav_status_text(nav), context,
+                        parse_mode="HTML",
+                        reply_markup=KB_NAV_CANCEL if status not in ("done", "failed") else None,
+                    )
+                except Exception:
+                    pass
+
+            if status == "done":
+                await _nav_on_done(chat_id, task_id, context)
+                return
+
+            if status == "failed":
+                result = task_data.get("result", "Неизвестная ошибка")
+                await _send_or_edit(
+                    chat_id,
+                    f"❌ <b>Исследование не удалось</b>\n\n{result}",
+                    context, parse_mode="HTML", edit=False,
+                    reply_markup=KB_NEW_SESSION,
+                )
+                NAV_SESSIONS.pop(chat_id, None)
+                return
+
+    except asyncio.CancelledError:
+        logger.info(f"Navigation polling cancelled for chat {chat_id}")
+    except Exception as e:
+        logger.error(f"Navigation polling error: {e}")
+        NAV_SESSIONS.pop(chat_id, None)
+
+
+async def _nav_on_done(chat_id: int, task_id: str,
+                       context: ContextTypes.DEFAULT_TYPE) -> None:
+    nav = NAV_SESSIONS.get(chat_id, {})
+
+    try:
+        data = await backend_client.get_task_screenshots(task_id)
+        screenshots_b64 = data.get("screenshots", [])
+        count = data.get("count", 0)
+    except Exception as e:
+        logger.error(f"Failed to get screenshots for task {task_id}: {e}")
+        await _send_or_edit(
+            chat_id,
+            f"✅ Исследование завершено, но не удалось получить скриншоты: {e}",
+            context, edit=False,
+        )
+        NAV_SESSIONS.pop(chat_id, None)
+        return
+
+    if not screenshots_b64:
+        await _send_or_edit(
+            chat_id,
+            "✅ Исследование завершено, но скриншотов нет.",
+            context, edit=False, reply_markup=KB_NEW_SESSION,
+        )
+        NAV_SESSIONS.pop(chat_id, None)
+        return
+
+    await _send_or_edit(
+        chat_id,
+        f"✅ Исследование завершено!\n"
+        f"Собрано {_screenshots_label(count)}. Отправляю…",
+        context, edit=False,
+    )
+
+    media_group = []
+    for i, b64 in enumerate(screenshots_b64[:10]):
+        photo_bytes = base64.b64decode(b64)
+        media_group.append(
+            InputMediaPhoto(
+                media=photo_bytes,
+                caption=f"Шаг {i + 1}" if i == 0 else None,
+            )
+        )
+
+    try:
+        await context.bot.send_media_group(chat_id, media=media_group)
+    except Exception as e:
+        logger.error(f"Failed to send media group: {e}")
+        await _send_or_edit(
+            chat_id, f"Не удалось отправить скриншоты: {e}",
+            context, edit=False,
+        )
+
+    if count > 10:
+        for i in range(10, min(count, 20)):
+            try:
+                photo_bytes = base64.b64decode(screenshots_b64[i])
+                await context.bot.send_photo(chat_id, photo=photo_bytes, caption=f"Шаг {i + 1}")
+            except Exception:
+                pass
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Проанализировать", callback_data=f"nav_evaluate:{task_id}"),
+            InlineKeyboardButton("🔄 Новая оценка", callback_data="new_session"),
+        ]
+    ])
+
+    await _send_or_edit(
+        chat_id,
+        f"🔍 Исследование завершено.\n"
+        f"Собрано {_screenshots_label(count)}.\n\n"
+        f"Нажми «Проанализировать» для оценки клиентского пути.",
+        context, parse_mode="HTML", edit=False,
+        reply_markup=kb,
+    )
+
+
+async def _do_nav_evaluate(chat_id: int, task_id: str,
+                           context: ContextTypes.DEFAULT_TYPE) -> None:
+    nav = NAV_SESSIONS.get(chat_id, {})
+    model = nav.get("model", await _get_model(chat_id))
+    label = await _model_label(model)
+
+    await _send_or_edit(
+        chat_id,
+        f"⏳ Анализирую клиентский путь на {label}…",
+        context, edit=False,
+    )
+
+    try:
+        data = await backend_client.evaluate_task(task_id, model)
+        result = data["result"]
+    except Exception as e:
+        logger.error(f"Nav evaluation failed for task {task_id}: {e}")
+        await _send_or_edit(
+            chat_id, f"Ошибка при анализе: {e}", context, edit=False,
+        )
+        return
+
+    nav["result"] = result
+    footer = await _build_footer(label)
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💡 Как улучшить?", callback_data=f"nav_improve:{task_id}"),
+            InlineKeyboardButton("🔄 Новая оценка", callback_data="new_session"),
+        ]
+    ])
+
+    await _send_chunked(
+        chat_id, result, footer, context,
+        reply_markup=kb, edit_first=False,
+    )
+
+
+async def _do_nav_improve(chat_id: int, task_id: str,
+                          context: ContextTypes.DEFAULT_TYPE) -> None:
+    nav = NAV_SESSIONS.get(chat_id, {})
+    model = nav.get("model", await _get_model(chat_id))
+    label = await _model_label(model)
+
+    await _send_or_edit(
+        chat_id,
+        f"💡 Анализирую возможные улучшения на {label}…",
+        context, edit=False,
+    )
+
+    try:
+        data = await backend_client.improve_task(task_id, model)
+        result = data["result"]
+    except Exception as e:
+        logger.error(f"Nav improvement failed for task {task_id}: {e}")
+        await _send_or_edit(
+            chat_id, f"Ошибка при анализе улучшений: {e}", context, edit=False,
+        )
+        return
+
+    footer = await _build_footer(label)
+    await _send_chunked(
+        chat_id, result, footer, context,
+        reply_markup=KB_NEW_SESSION, edit_first=False,
+    )
+    NAV_SESSIONS.pop(chat_id, None)
+
+
+async def _nav_cancel(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+    nav = NAV_SESSIONS.pop(chat_id, None)
+    if nav and "poll_task" in nav:
+        nav["state"] = "cancelled"
+        nav["poll_task"].cancel()
+
+    try:
+        await _edit_status(
+            chat_id, "🔍 Исследование отменено.",
+            context, reply_markup=None,
+        )
+    except Exception:
+        await _send_or_edit(
+            chat_id, "🔍 Исследование отменено.",
+            context, edit=False,
+        )
+
+
+# --- Обработчики команд ---
+
+
 async def evaluate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /evaluate."""
     await _do_evaluate(update.effective_chat.id, context)
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /reset."""
     chat_id = update.effective_chat.id
     SESSIONS.pop(chat_id, None)
     STATUS_MESSAGES.pop(chat_id, None)
@@ -396,81 +746,116 @@ async def _clear_chat(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /clear."""
     await _clear_chat(update.effective_chat.id, context)
 
 
+# --- Обработчик кнопок ---
+
+
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик нажатий на инлайн-кнопки."""
     query = update.callback_query
     await query.answer()
     chat_id = query.message.chat_id
+    data = query.data
 
-    if query.data == "evaluate":
+    if data == "mode_evaluate":
+        await _remove_buttons(query)
+        await _send_or_edit(
+            chat_id,
+            "📸 Отправь скриншоты клиентского пути — по одному, альбомом "
+            "или несколькими сообщениями.\n"
+            "Можно отправить один скрин с несколькими экранами (например, из Figma).\n\n"
+            "Когда все скрины загружены, нажми «Оценить».",
+            context, edit=False,
+        )
+
+    elif data == "evaluate":
         await _do_evaluate(chat_id, context)
 
-    elif query.data == "reset":
+    elif data == "reset":
         SESSIONS.pop(chat_id, None)
         STATUS_MESSAGES.pop(chat_id, None)
         await query.message.reply_text("Скриншоты очищены. Отправляй новые.")
 
-    elif query.data == "clear_chat":
+    elif data == "clear_chat":
         await _clear_chat(chat_id, context)
 
-    elif query.data == "pick_model":
+    elif data == "pick_model":
         await _edit_status(
             chat_id, "Выбери модель для анализа:",
             context, reply_markup=await _kb_model_picker(),
         )
 
-    elif query.data.startswith("model:"):
-        model_id = query.data.removeprefix("model:")
+    elif data.startswith("model:"):
+        model_id = data.removeprefix("model:")
         USER_MODELS[chat_id] = model_id
         await _edit_status(
             chat_id, await _status_text(chat_id),
             context, reply_markup=await _kb_after_screenshot(chat_id),
         )
 
-    elif query.data == "improve":
-        try:
-            await query.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+    elif data == "improve":
+        await _remove_buttons(query)
         await _do_improve(chat_id, context)
 
-    elif query.data == "new_session":
+    elif data == "new_session":
         SESSIONS.pop(chat_id, None)
         STATUS_MESSAGES.pop(chat_id, None)
         LAST_EVALUATIONS.pop(chat_id, None)
-        try:
-            await query.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        nav = NAV_SESSIONS.pop(chat_id, None)
+        if nav and "poll_task" in nav:
+            nav["state"] = "cancelled"
+            nav["poll_task"].cancel()
+        await _remove_buttons(query)
         await context.bot.send_message(
-            chat_id, "Отправляй скриншоты нового клиентского пути."
+            chat_id,
+            "Выбери режим работы:",
+            reply_markup=KB_START,
         )
 
-    elif query.data == "back_to_status":
+    elif data == "back_to_status":
         await _edit_status(
             chat_id, await _status_text(chat_id),
             context, reply_markup=await _kb_after_screenshot(chat_id),
         )
 
+    elif data == "nav_start":
+        await _remove_buttons(query)
+        await _nav_start(chat_id, context)
+
+    elif data == "nav_cancel":
+        await _remove_buttons(query)
+        await _nav_cancel(chat_id, context)
+
+    elif data.startswith("nav_evaluate:"):
+        task_id = data.removeprefix("nav_evaluate:")
+        await _remove_buttons(query)
+        await _do_nav_evaluate(chat_id, task_id, context)
+
+    elif data.startswith("nav_improve:"):
+        task_id = data.removeprefix("nav_improve:")
+        await _remove_buttons(query)
+        await _do_nav_improve(chat_id, task_id, context)
+
 
 async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик любого текста, не являющегося командой."""
+    chat_id = update.effective_chat.id
+    nav = NAV_SESSIONS.get(chat_id)
+
+    if nav and nav.get("state") == "awaiting_query":
+        await _nav_handle_text(chat_id, update.message.text, context)
+        return
+
     await update.message.reply_text(
         "Я принимаю только скриншоты. Отправь изображения экранов приложения или сайта."
     )
 
 
 async def _on_shutdown(application) -> None:
-    """Корректно закрывает HTTP-клиент при остановке бота."""
     await backend_client.close()
 
 
 def main() -> None:
-    """Запускает Telegram-бота в режиме long polling."""
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_shutdown(_on_shutdown).build()
 
     app.add_handler(CommandHandler("start", start))

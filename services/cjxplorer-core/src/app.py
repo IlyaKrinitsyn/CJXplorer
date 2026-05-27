@@ -25,6 +25,7 @@ from .models import (
     TaskScreenshotsResponse,
     TaskStatus,
 )
+from .device_manager import handle_device_connection, is_device_connected, notify_new_task
 from .tasks import create_task, get_task
 from .ws_handler import handle_navigation_session
 
@@ -92,10 +93,13 @@ async def improve(request: ImproveRequest):
 
 @app.post("/navigate", response_model=TaskResponse)
 async def navigate(request: NavigateRequest):
-    """Создаёт задачу навигации. Android подключается к WS по task_id."""
+    """Создаёт задачу навигации и уведомляет подключённое устройство."""
     task = create_task(request.app_name, request.journey_description, request.model)
     task.status = TaskStatus.WAITING_DEVICE
     logger.info(f"Задача создана: {task.task_id} — {task.app_name}: {task.journey_description}")
+
+    await notify_new_task(task)
+
     return TaskResponse(**task.to_dict())
 
 
@@ -187,9 +191,21 @@ async def improve_task(task_id: str, request: TaskEvaluateRequest):
     return ImproveResponse(result=result, model=request.model)
 
 
+@app.get("/device/status")
+async def device_status():
+    """Проверяет, подключено ли Android-устройство."""
+    return {"connected": is_device_connected()}
+
+
+@app.websocket("/ws/device")
+async def ws_device(websocket: WebSocket):
+    """Постоянное WS-соединение Android-устройства для получения новых задач."""
+    await handle_device_connection(websocket)
+
+
 @app.websocket("/ws/navigate/{task_id}")
 async def ws_navigate(websocket: WebSocket, task_id: str):
-    """WebSocket-эндпоинт для Android-устройства. Логика — в ws_handler."""
+    """WebSocket-эндпоинт для навигационной сессии. Логика — в ws_handler."""
     task = get_task(task_id)
     if not task:
         await websocket.close(code=4004, reason="Task not found")

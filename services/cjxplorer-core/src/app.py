@@ -132,10 +132,8 @@ async def get_task_screenshots(task_id: str):
     task = get_task(task_id)
     if not task:
         raise HTTPException(404, "Задача не найдена")
-    if task.status not in (TaskStatus.DONE, TaskStatus.EVALUATING):
+    if task.status not in (TaskStatus.DONE, TaskStatus.EVALUATING, TaskStatus.FAILED):
         raise HTTPException(400, f"Навигация ещё не завершена (статус: {task.status.value})")
-    if not task.screenshots:
-        raise HTTPException(404, "Скриншоты отсутствуют")
 
     screenshots_b64 = [
         base64.b64encode(s).decode("utf-8") for s in task.screenshots

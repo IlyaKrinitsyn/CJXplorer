@@ -566,7 +566,8 @@ async def _poll_navigation(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
                     pass
 
             if status == "done":
-                await _nav_on_done(chat_id, task_id, context)
+                result_text = task_data.get("result")
+                await _nav_on_done(chat_id, task_id, context, result_text)
                 return
 
             if status == "failed":
@@ -588,7 +589,8 @@ async def _poll_navigation(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def _nav_on_done(chat_id: int, task_id: str,
-                       context: ContextTypes.DEFAULT_TYPE) -> None:
+                       context: ContextTypes.DEFAULT_TYPE,
+                       result_text: str | None = None) -> None:
     nav = NAV_SESSIONS.get(chat_id, {})
 
     try:
@@ -597,20 +599,22 @@ async def _nav_on_done(chat_id: int, task_id: str,
         count = data.get("count", 0)
     except Exception as e:
         logger.error(f"Failed to get screenshots for task {task_id}: {e}")
-        await _send_or_edit(
-            chat_id,
-            f"✅ Исследование завершено, но не удалось получить скриншоты: {e}",
-            context, edit=False,
-        )
+        msg = "✅ Исследование завершено, но не удалось получить скриншоты."
+        if result_text:
+            msg += f"\n\n📋 {result_text}"
+        await _send_or_edit(chat_id, msg, context, edit=False,
+                            reply_markup=KB_NEW_SESSION)
         NAV_SESSIONS.pop(chat_id, None)
         return
 
     if not screenshots_b64:
-        await _send_or_edit(
-            chat_id,
-            "✅ Исследование завершено, но скриншотов нет.",
-            context, edit=False, reply_markup=KB_NEW_SESSION,
-        )
+        msg = "✅ Исследование завершено."
+        if result_text:
+            msg += f"\n\n📋 {result_text}"
+        else:
+            msg += "\nСкриншотов нет."
+        await _send_or_edit(chat_id, msg, context, edit=False,
+                            reply_markup=KB_NEW_SESSION)
         NAV_SESSIONS.pop(chat_id, None)
         return
 

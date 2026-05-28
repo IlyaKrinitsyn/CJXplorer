@@ -123,8 +123,16 @@ class CJXplorerNavigationService : Service() {
                         Log.i(TAG, "START received: ${action.task}")
                         Log.i(TAG, "A11y instance: ${CJXplorerAccessibilityService.instance != null}")
                         Log.i(TAG, "ScreenCapture ready: ${screenCapture?.isReady}")
+
+                        val a11y = CJXplorerAccessibilityService.instance
+                        if (a11y != null) {
+                            Log.i(TAG, "Pressing HOME to exit CJXplorer...")
+                            a11y.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
+                            delay(HOME_SETTLE_DELAY_MS)
+                        }
+
                         delay(INITIAL_DELAY_MS)
-                        Log.i(TAG, "Sending initial screen state...")
+                        Log.i(TAG, "Sending initial screen state (home screen)...")
                         sendScreenState()
                         Log.i(TAG, "Initial screen state sent, waiting for backend response...")
                     }
@@ -246,6 +254,7 @@ class CJXplorerNavigationService : Service() {
         private const val TAG = "CJXplorerNavService"
         private const val CHANNEL_ID = "cjxplorer_navigation"
         private const val NOTIFICATION_ID = 1
+        private const val HOME_SETTLE_DELAY_MS = 1000L
         private const val INITIAL_DELAY_MS = 1000L
         private const val ACTION_SETTLE_DELAY_MS = 800L
 

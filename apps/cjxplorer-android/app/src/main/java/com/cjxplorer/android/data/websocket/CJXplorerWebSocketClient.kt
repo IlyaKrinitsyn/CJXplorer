@@ -119,7 +119,7 @@ class CJXplorerWebSocketClient(
     private fun parseAction(msg: WsIncomingMessage): NavigationAction? = when (msg.type) {
         "start" -> NavigationAction.Start(msg.task.orEmpty())
         "action" -> when (msg.action) {
-            "click" -> NavigationAction.Click(msg.nodeId.orEmpty())
+            "click" -> NavigationAction.Click(msg.nodeId.orEmpty(), msg.desc)
             "scroll" -> NavigationAction.Scroll(
                 when (msg.direction) {
                     "up" -> ScrollDirection.UP

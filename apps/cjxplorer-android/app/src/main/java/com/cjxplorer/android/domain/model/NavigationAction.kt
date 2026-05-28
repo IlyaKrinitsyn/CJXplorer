@@ -2,7 +2,7 @@ package com.cjxplorer.android.domain.model
 
 sealed class NavigationAction {
     data class Start(val task: String) : NavigationAction()
-    data class Click(val nodeId: String) : NavigationAction()
+    data class Click(val nodeId: String, val desc: String? = null) : NavigationAction()
     data class Scroll(val direction: ScrollDirection) : NavigationAction()
     data class TypeText(val nodeId: String, val text: String) : NavigationAction()
     data class InputNeeded(val nodeId: String, val prompt: String) : NavigationAction()

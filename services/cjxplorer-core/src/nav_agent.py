@@ -21,8 +21,8 @@ logger.info(f"[NAV] LLM client: base_url={LLM_BASE_URL}, api_key={'set' if LLM_A
 _client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
 
 VALID_ACTIONS = {"click", "scroll", "type", "input_needed", "back", "done"}
-MAX_NODE_DEPTH = 6
 MAX_RETRY = 1
+MAX_WALK_DEPTH = 30
 
 
 def _count_nodes(nodes: list[dict]) -> int:
@@ -34,76 +34,75 @@ def _count_nodes(nodes: list[dict]) -> int:
     return total
 
 
-def _dump_tree_summary(nodes: list[dict], depth: int = 0, max_depth: int = 3) -> list[str]:
-    """Возвращает текстовый дамп первых уровней дерева для диагностики."""
-    lines = []
-    if depth >= max_depth:
-        return lines
-    for node in nodes:
-        indent = "  " * depth
-        cls = node.get("class_name", "?")
-        nid = node.get("id", "")
-        text = node.get("text", "")
-        desc = node.get("content_description", "")
-        click = node.get("clickable", False)
-        scroll = node.get("scrollable", False)
-        n_children = len(node.get("children", []))
-        info = f"{indent}{cls}"
-        if nid:
-            info += f" id={nid}"
-        if text:
-            info += f' text="{text[:30]}"'
-        if desc:
-            info += f' desc="{desc[:30]}"'
-        if click:
-            info += " [clickable]"
-        if scroll:
-            info += " [scrollable]"
-        info += f" ({n_children} children)"
-        lines.append(info)
-        lines.extend(_dump_tree_summary(node.get("children", []), depth + 1, max_depth))
-    return lines
-
-
-def _filter_nodes(nodes: list[dict], depth: int = 0) -> list[dict]:
+def _flatten_nodes(nodes: list[dict]) -> list[dict]:
     """
-    Убирает пустые/невидимые ноды и ограничивает глубину дерева
-    для экономии токенов в LLM-контексте.
-    """
-    if depth >= MAX_NODE_DEPTH:
-        return []
+    Обходит всё дерево нод без ограничения глубины и собирает
+    плоский список элементов, полезных для навигации.
 
+    Включает:
+    - интерактивные элементы (clickable / scrollable)
+    - элементы с текстом или content_description
+
+    Результат — компактный список без вложенности,
+    напрямую пригодный для LLM.
+    """
     result = []
-    for node in nodes:
-        has_text = bool(node.get("text") or node.get("content_description"))
-        has_id = bool(node.get("id"))
-        is_interactive = node.get("clickable") or node.get("scrollable")
-        children = _filter_nodes(node.get("children", []), depth + 1)
 
-        if has_text or has_id or is_interactive or children:
-            filtered = {
-                "id": node.get("id", ""),
-                "class_name": node.get("class_name", ""),
-            }
-            if node.get("text"):
-                filtered["text"] = node["text"]
-            if node.get("content_description"):
-                filtered["content_description"] = node["content_description"]
-            if node.get("clickable"):
-                filtered["clickable"] = True
-            if node.get("scrollable"):
-                filtered["scrollable"] = True
+    def _walk(node_list: list[dict], depth: int = 0):
+        if depth > MAX_WALK_DEPTH:
+            return
+        for node in node_list:
+            has_text = bool(node.get("text") or node.get("content_description"))
+            is_interactive = node.get("clickable") or node.get("scrollable")
 
-            bounds = node.get("bounds")
-            if bounds:
-                filtered["bounds"] = bounds
+            if has_text or is_interactive:
+                flat: dict = {}
+                nid = node.get("id", "")
+                if nid:
+                    flat["id"] = nid
+                if node.get("text"):
+                    flat["text"] = node["text"]
+                if node.get("content_description"):
+                    flat["desc"] = node["content_description"]
+                if node.get("clickable"):
+                    flat["clickable"] = True
+                if node.get("scrollable"):
+                    flat["scrollable"] = True
+                bounds = node.get("bounds")
+                if bounds:
+                    flat["bounds"] = bounds
+                result.append(flat)
 
-            if children:
-                filtered["children"] = children
+            _walk(node.get("children", []), depth + 1)
 
-            result.append(filtered)
-
+    _walk(nodes)
     return result
+
+
+def _format_elements_for_prompt(elements: list[dict]) -> str:
+    """Форматирует плоский список элементов в читаемый текст для промпта."""
+    if not elements:
+        return "(нет доступных элементов — ориентируйся только по скриншоту)"
+
+    lines = []
+    for i, el in enumerate(elements):
+        parts = [f"#{i}"]
+        if el.get("clickable"):
+            parts.append("[clickable]")
+        if el.get("scrollable"):
+            parts.append("[scrollable]")
+        if el.get("id"):
+            parts.append(f'id="{el["id"]}"')
+        if el.get("text"):
+            parts.append(f'text="{el["text"]}"')
+        if el.get("desc"):
+            parts.append(f'desc="{el["desc"]}"')
+        b = el.get("bounds")
+        if b:
+            parts.append(f'bounds=({b.get("left",0)},{b.get("top",0)},{b.get("right",0)},{b.get("bottom",0)})')
+        lines.append(" ".join(parts))
+
+    return "\n".join(lines)
 
 
 def _get_phase_hint(action_history: list[dict], step: int) -> str:
@@ -224,21 +223,15 @@ async def decide_next_action(
         {"action": "done"}
     """
     total_raw = _count_nodes(nodes)
-    tree_summary = _dump_tree_summary(nodes, max_depth=3)
-    logger.info(
-        f"[NAV] Step {step}: raw tree total={total_raw} nodes, "
-        f"top-level={len(nodes)}"
-    )
-    for line in tree_summary[:50]:
-        logger.info(f"[NAV] TREE: {line}")
-
-    filtered_nodes = _filter_nodes(nodes)
-    nodes_json = json.dumps(filtered_nodes, ensure_ascii=False, indent=1)
+    elements = _flatten_nodes(nodes)
+    elements_text = _format_elements_for_prompt(elements)
 
     logger.info(
-        f"[NAV] Step {step}: after filter={len(filtered_nodes)} top-level, "
-        f"nodes_json={len(nodes_json)} chars"
+        f"[NAV] Step {step}: raw tree={total_raw} nodes, "
+        f"flattened={len(elements)} elements"
     )
+    for el in elements[:20]:
+        logger.info(f"[NAV] ELEMENT: {el}")
 
     history = action_history or []
     history_text = _format_action_history(history)
@@ -249,7 +242,7 @@ async def decide_next_action(
         step=step,
         phase_hint=phase_hint,
         action_history=history_text,
-        nodes_json=nodes_json,
+        elements=elements_text,
     )
 
     user_content: list[dict] = []

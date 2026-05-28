@@ -30,16 +30,62 @@ class CJXplorerAccessibilityService : AccessibilityService() {
     }
 
     fun performAction(action: NavigationAction): Boolean = when (action) {
-        is NavigationAction.Click -> findAndClick(action.nodeId)
+        is NavigationAction.Click -> findAndClick(action.nodeId, action.desc)
         is NavigationAction.Scroll -> performScroll(action.direction)
         is NavigationAction.TypeText -> findAndType(action.nodeId, action.text)
         is NavigationAction.Back -> performGlobalAction(GLOBAL_ACTION_BACK)
         else -> false
     }
 
-    private fun findAndClick(nodeId: String): Boolean {
-        val node = findNodeById(nodeId) ?: return false
-        return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    private fun findAndClick(nodeId: String, desc: String? = null): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val candidates = root.findAccessibilityNodeInfosByViewId(nodeId)
+
+        if (candidates.isNullOrEmpty()) {
+            Log.w(TAG, "findAndClick: no nodes found for id=$nodeId")
+            if (!desc.isNullOrEmpty()) {
+                val byDesc = findNodeByDescription(root, desc)
+                if (byDesc != null) {
+                    Log.i(TAG, "findAndClick: found by desc='$desc' (fallback)")
+                    return byDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                }
+            }
+            return false
+        }
+
+        if (candidates.size == 1 || desc.isNullOrEmpty()) {
+            Log.i(TAG, "findAndClick: clicking first of ${candidates.size} for id=$nodeId")
+            return candidates.first().performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        }
+
+        val match = candidates.firstOrNull { node ->
+            node.contentDescription?.toString()?.contains(desc, ignoreCase = true) == true ||
+                node.text?.toString()?.contains(desc, ignoreCase = true) == true
+        }
+        if (match != null) {
+            Log.i(TAG, "findAndClick: matched desc='$desc' among ${candidates.size} candidates")
+            return match.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        }
+
+        Log.w(TAG, "findAndClick: desc='$desc' not matched, clicking first of ${candidates.size}")
+        return candidates.first().performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    }
+
+    private fun findNodeByDescription(
+        node: AccessibilityNodeInfo,
+        desc: String
+    ): AccessibilityNodeInfo? {
+        val nodeDesc = node.contentDescription?.toString().orEmpty()
+        val nodeText = node.text?.toString().orEmpty()
+        if (nodeDesc.contains(desc, ignoreCase = true) || nodeText.contains(desc, ignoreCase = true)) {
+            if (node.isClickable) return node
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val result = findNodeByDescription(child, desc)
+            if (result != null) return result
+        }
+        return null
     }
 
     private fun findAndType(nodeId: String, text: String): Boolean {

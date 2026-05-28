@@ -238,11 +238,15 @@ def _resolve_element_ref(action: dict, elements: list[dict]) -> dict:
     """
     node_id = action.get("node_id", "")
 
-    if not node_id.startswith("#"):
+    if node_id.startswith("#"):
+        idx_str = node_id[1:]
+    elif node_id.isdigit():
+        idx_str = node_id
+    else:
         return action
 
     try:
-        idx = int(node_id[1:])
+        idx = int(idx_str)
     except (ValueError, IndexError):
         logger.warning(f"[NAV] Cannot parse element ref: {node_id}")
         return action

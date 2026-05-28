@@ -141,7 +141,10 @@ class CJXplorerNavigationService : Service() {
                         Log.i(TAG, "Initial screen state sent, waiting for backend response...")
                     }
                     is NavigationAction.Done -> {
-                        Log.i(TAG, "DONE received, stopping service")
+                        Log.i(TAG, "DONE received, pressing HOME and stopping service")
+                        CJXplorerAccessibilityService.instance?.performGlobalAction(
+                            android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME
+                        )
                         stop(this@CJXplorerNavigationService)
                         return@collect
                     }

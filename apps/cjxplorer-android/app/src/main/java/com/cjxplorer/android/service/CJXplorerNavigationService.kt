@@ -25,6 +25,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -92,6 +94,7 @@ class CJXplorerNavigationService : Service() {
         Log.i(TAG, "Connecting wsClient to task $taskId...")
         wsClient.connect(taskId)
         Log.i(TAG, "Starting navigation loop...")
+        _isRunning.value = true
         startNavigationLoop()
 
         return START_NOT_STICKY
@@ -101,6 +104,7 @@ class CJXplorerNavigationService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "Navigation service destroyed")
+        _isRunning.value = false
         navigationJob?.cancel()
         wsClient.disconnect()
         screenCapture?.release()
@@ -257,6 +261,9 @@ class CJXplorerNavigationService : Service() {
         private const val HOME_SETTLE_DELAY_MS = 1000L
         private const val INITIAL_DELAY_MS = 1000L
         private const val ACTION_SETTLE_DELAY_MS = 800L
+
+        private val _isRunning = MutableStateFlow(false)
+        val isRunning: StateFlow<Boolean> = _isRunning
 
         const val EXTRA_TASK_ID = "task_id"
         const val EXTRA_PROJECTION_RESULT_CODE = "projection_result_code"

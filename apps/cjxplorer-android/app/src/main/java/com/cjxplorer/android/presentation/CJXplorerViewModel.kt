@@ -80,6 +80,18 @@ class CJXplorerViewModel @Inject constructor(
                 startNavigation(task)
             }
         }
+
+        viewModelScope.launch {
+            CJXplorerNavigationService.isRunning.collect { running ->
+                if (!running && _uiState.value.isNavigating) {
+                    _uiState.value = _uiState.value.copy(
+                        isNavigating = false,
+                        currentTask = null
+                    )
+                    addLog("Навигация завершена")
+                }
+            }
+        }
     }
 
     fun saveServerUrl(url: String) {

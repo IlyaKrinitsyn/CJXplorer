@@ -65,16 +65,7 @@ class CJXplorerAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 2. По contentDescription / text
-        if (!desc.isNullOrEmpty() && root != null) {
-            val byDesc = findNodeByDescription(root, desc)
-            if (byDesc != null) {
-                Log.i(TAG, "click: by desc='$desc'")
-                return byDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            }
-        }
-
-        // 3. По координатам (bounds) — последний fallback
+        // 2. По координатам (bounds) — надёжный вариант, координаты всегда уникальны
         if (click.boundsLeft != null && click.boundsTop != null &&
             click.boundsRight != null && click.boundsBottom != null
         ) {
@@ -82,6 +73,15 @@ class CJXplorerAccessibilityService : AccessibilityService() {
             val centerY = (click.boundsTop + click.boundsBottom) / 2f
             Log.i(TAG, "click: by bounds tap at ($centerX, $centerY)")
             return tapAt(centerX, centerY)
+        }
+
+        // 3. По contentDescription / text — когда bounds не доступны
+        if (!desc.isNullOrEmpty() && root != null) {
+            val byDesc = findNodeByDescription(root, desc)
+            if (byDesc != null) {
+                Log.i(TAG, "click: by desc='$desc'")
+                return byDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            }
         }
 
         Log.e(TAG, "click: all strategies failed for id=$nodeId, desc=$desc")

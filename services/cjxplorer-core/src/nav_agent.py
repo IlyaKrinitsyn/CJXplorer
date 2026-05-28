@@ -194,13 +194,47 @@ def _parse_llm_response(text: str) -> dict | None:
     return None
 
 
+def _find_clickable_container(
+    target: dict, elements: list[dict]
+) -> dict | None:
+    """
+    Если target не clickable, ищет ближайший clickable элемент,
+    чьи bounds полностью содержат target.
+    Выбирает самый маленький (ближайший) контейнер.
+    """
+    tb = target.get("bounds")
+    if not tb:
+        return None
+
+    best = None
+    best_area = float("inf")
+    for el in elements:
+        if not el.get("clickable"):
+            continue
+        eb = el.get("bounds")
+        if not eb:
+            continue
+        if (eb.get("left", 0) <= tb.get("left", 0) and
+                eb.get("top", 0) <= tb.get("top", 0) and
+                eb.get("right", 0) >= tb.get("right", 0) and
+                eb.get("bottom", 0) >= tb.get("bottom", 0)):
+            area = ((eb.get("right", 0) - eb.get("left", 0)) *
+                    (eb.get("bottom", 0) - eb.get("top", 0)))
+            if area < best_area:
+                best = el
+                best_area = area
+    return best
+
+
 def _resolve_element_ref(action: dict, elements: list[dict]) -> dict:
     """
     Резолвит ссылку #N в реальные данные элемента.
 
     LLM использует индексы (#0, #1, ...) из списка элементов.
-    Эта функция заменяет их на реальные id/desc/bounds,
-    которые Android может использовать для клика.
+    Эта функция:
+    1. Находит элемент по индексу
+    2. Если элемент не clickable — находит ближайший clickable-контейнер
+    3. Собирает id/desc/bounds для Android
     """
     node_id = action.get("node_id", "")
 
@@ -218,6 +252,22 @@ def _resolve_element_ref(action: dict, elements: list[dict]) -> dict:
         return action
 
     el = elements[idx]
+
+    if action.get("action") == "click" and not el.get("clickable"):
+        container = _find_clickable_container(el, elements)
+        if container:
+            logger.info(
+                f"[NAV] {node_id} not clickable, using container "
+                f"id={container.get('id', '')!r} bounds={container.get('bounds')}"
+            )
+            el_desc = el.get("desc") or el.get("text", "")
+            resolved = dict(action)
+            resolved["node_id"] = container.get("id", "")
+            if el_desc:
+                resolved["desc"] = el_desc
+            resolved["bounds"] = container.get("bounds") or el.get("bounds")
+            return resolved
+
     resolved = dict(action)
     resolved["node_id"] = el.get("id", "")
     if el.get("desc"):

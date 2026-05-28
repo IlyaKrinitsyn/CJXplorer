@@ -160,6 +160,20 @@ class CJXplorerNavigationService : Service() {
             val a11y = CJXplorerAccessibilityService.instance
             val nodeTree = a11y?.getNodeTree()
 
+            if (nodeTree != null) {
+                val totalNodes = countNodes(nodeTree)
+                Log.i(TAG, "A11y tree: totalNodes=$totalNodes, root.class=${nodeTree.className}, " +
+                    "root.id=${nodeTree.id}, root.clickable=${nodeTree.isClickable}, " +
+                    "root.children=${nodeTree.children.size}")
+                for ((i, child) in nodeTree.children.take(10).withIndex()) {
+                    Log.i(TAG, "  child[$i]: class=${child.className}, id=${child.id}, " +
+                        "text='${child.text.take(30)}', desc='${child.contentDescription.take(30)}', " +
+                        "clickable=${child.isClickable}, children=${child.children.size}")
+                }
+            } else {
+                Log.w(TAG, "A11y tree is NULL (a11y instance=${a11y != null})")
+            }
+
             val capture = screenCapture
             val screenshot = if (capture?.isReady == true) {
                 val dm = getDisplayMetrics()
@@ -185,6 +199,10 @@ class CJXplorerNavigationService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send screen state", e)
         }
+    }
+
+    private fun countNodes(node: AccessibilityNode): Int {
+        return 1 + node.children.sumOf { countNodes(it) }
     }
 
     private fun getDisplayMetrics(): DisplayMetrics {

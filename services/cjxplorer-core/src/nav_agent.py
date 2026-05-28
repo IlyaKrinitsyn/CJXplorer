@@ -25,6 +25,46 @@ MAX_NODE_DEPTH = 6
 MAX_RETRY = 1
 
 
+def _count_nodes(nodes: list[dict]) -> int:
+    """Рекурсивно считает общее количество нод в дереве."""
+    total = 0
+    for node in nodes:
+        total += 1
+        total += _count_nodes(node.get("children", []))
+    return total
+
+
+def _dump_tree_summary(nodes: list[dict], depth: int = 0, max_depth: int = 3) -> list[str]:
+    """Возвращает текстовый дамп первых уровней дерева для диагностики."""
+    lines = []
+    if depth >= max_depth:
+        return lines
+    for node in nodes:
+        indent = "  " * depth
+        cls = node.get("class_name", "?")
+        nid = node.get("id", "")
+        text = node.get("text", "")
+        desc = node.get("content_description", "")
+        click = node.get("clickable", False)
+        scroll = node.get("scrollable", False)
+        n_children = len(node.get("children", []))
+        info = f"{indent}{cls}"
+        if nid:
+            info += f" id={nid}"
+        if text:
+            info += f' text="{text[:30]}"'
+        if desc:
+            info += f' desc="{desc[:30]}"'
+        if click:
+            info += " [clickable]"
+        if scroll:
+            info += " [scrollable]"
+        info += f" ({n_children} children)"
+        lines.append(info)
+        lines.extend(_dump_tree_summary(node.get("children", []), depth + 1, max_depth))
+    return lines
+
+
 def _filter_nodes(nodes: list[dict], depth: int = 0) -> list[dict]:
     """
     Убирает пустые/невидимые ноды и ограничивает глубину дерева
@@ -183,12 +223,20 @@ async def decide_next_action(
         {"action": "input_needed", "node_id": "...", "prompt": "Введите логин"}
         {"action": "done"}
     """
+    total_raw = _count_nodes(nodes)
+    tree_summary = _dump_tree_summary(nodes, max_depth=3)
+    logger.info(
+        f"[NAV] Step {step}: raw tree total={total_raw} nodes, "
+        f"top-level={len(nodes)}"
+    )
+    for line in tree_summary[:50]:
+        logger.info(f"[NAV] TREE: {line}")
+
     filtered_nodes = _filter_nodes(nodes)
     nodes_json = json.dumps(filtered_nodes, ensure_ascii=False, indent=1)
 
     logger.info(
-        f"[NAV] Step {step}: raw nodes={len(nodes)}, "
-        f"filtered nodes={len(filtered_nodes)}, "
+        f"[NAV] Step {step}: after filter={len(filtered_nodes)} top-level, "
         f"nodes_json={len(nodes_json)} chars"
     )
 

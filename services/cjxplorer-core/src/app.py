@@ -25,7 +25,13 @@ from .models import (
     TaskScreenshotsResponse,
     TaskStatus,
 )
-from .device_manager import handle_device_connection, is_device_connected, notify_new_task
+from .device_manager import (
+    device_status,
+    handle_device_connection,
+    is_device_busy,
+    is_device_connected,
+    notify_new_task,
+)
 from .tasks import create_task, get_task
 from .ws_handler import handle_navigation_session
 
@@ -94,6 +100,18 @@ async def improve(request: ImproveRequest):
 @app.post("/navigate", response_model=TaskResponse)
 async def navigate(request: NavigateRequest):
     """Создаёт задачу навигации и уведомляет подключённое устройство."""
+    if not is_device_connected():
+        raise HTTPException(
+            503,
+            "Android-устройство не подключено. Запусти CJXplorer на телефоне.",
+        )
+
+    if is_device_busy():
+        raise HTTPException(
+            409,
+            "Устройство занято выполнением другой задачи. Дождись завершения и попробуй снова.",
+        )
+
     task = create_task(request.app_name, request.journey_description, request.model)
     task.status = TaskStatus.WAITING_DEVICE
     logger.info(f"Задача создана: {task.task_id} — {task.app_name}: {task.journey_description}")
@@ -190,9 +208,9 @@ async def improve_task(task_id: str, request: TaskEvaluateRequest):
 
 
 @app.get("/device/status")
-async def device_status():
-    """Проверяет, подключено ли Android-устройство."""
-    return {"connected": is_device_connected()}
+async def get_device_status():
+    """Проверяет статус Android-устройства (подключено, занято, текущая задача)."""
+    return device_status()
 
 
 @app.websocket("/ws/device")

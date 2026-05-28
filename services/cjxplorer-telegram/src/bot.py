@@ -446,23 +446,35 @@ def _nav_status_text(nav: dict) -> str:
 
 async def _nav_start(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Начинает исследование CJ — проверяет устройство и просит описать задачу."""
-    device_connected = await backend_client.get_device_status()
+    status = await backend_client.get_device_status()
 
-    if not device_connected:
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 Попробовать снова", callback_data="nav_start")],
-            [
-                InlineKeyboardButton("📸 Оценка CJ", callback_data="mode_evaluate"),
-                InlineKeyboardButton("← В начало", callback_data="go_home"),
-            ],
-        ])
+    kb_retry = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Попробовать снова", callback_data="nav_start")],
+        [
+            InlineKeyboardButton("📸 Оценка CJ", callback_data="mode_evaluate"),
+            InlineKeyboardButton("← В начало", callback_data="go_home"),
+        ],
+    ])
+
+    if not status.get("connected"):
         await _send_or_edit(
             chat_id,
             "🔍 <b>Исследование CJ</b>\n\n"
             "⚠️ Android-устройство не подключено.\n"
             "Запусти приложение CJXplorer на телефоне и попробуй снова.",
             context, parse_mode="HTML", edit=False,
-            reply_markup=kb,
+            reply_markup=kb_retry,
+        )
+        return
+
+    if status.get("busy"):
+        await _send_or_edit(
+            chat_id,
+            "🔍 <b>Исследование CJ</b>\n\n"
+            "⏳ Устройство сейчас занято выполнением другой задачи.\n"
+            "Дождись завершения и попробуй снова.",
+            context, parse_mode="HTML", edit=False,
+            reply_markup=kb_retry,
         )
         return
 
@@ -511,9 +523,27 @@ async def _nav_handle_text(chat_id: int, text: str,
         nav["model"] = model
     except Exception as e:
         logger.error(f"Failed to create nav task: {e}")
+        error_msg = str(e)
+        if "409" in error_msg or "занято" in error_msg.lower():
+            user_msg = (
+                "⏳ Устройство занято выполнением другой задачи.\n"
+                "Дождись завершения и попробуй снова."
+            )
+        elif "503" in error_msg:
+            user_msg = (
+                "⚠️ Android-устройство не подключено.\n"
+                "Запусти CJXplorer на телефоне и попробуй снова."
+            )
+        else:
+            user_msg = f"Ошибка при создании задачи: {e}"
+
+        kb_retry = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Попробовать снова", callback_data="nav_start")],
+            [InlineKeyboardButton("← В начало", callback_data="go_home")],
+        ])
         await _send_or_edit(
-            chat_id, f"Ошибка при создании задачи: {e}",
-            context, edit=False,
+            chat_id, user_msg, context, edit=False,
+            reply_markup=kb_retry,
         )
         NAV_SESSIONS.pop(chat_id, None)
         return

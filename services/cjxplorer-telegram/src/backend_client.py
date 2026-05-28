@@ -123,11 +123,11 @@ async def improve_task(task_id: str, model: str) -> dict:
     return resp.json()
 
 
-async def get_device_status() -> bool:
-    """Проверить, подключено ли Android-устройство."""
+async def get_device_status() -> dict:
+    """Получить статус Android-устройства (connected, busy, current_task_id)."""
     try:
         resp = await _get_client().get("/device/status")
         resp.raise_for_status()
-        return resp.json().get("connected", False)
+        return resp.json()
     except Exception:
-        return False
+        return {"connected": False, "busy": False, "current_task_id": None}

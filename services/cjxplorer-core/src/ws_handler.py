@@ -17,6 +17,7 @@ import time
 from fastapi import WebSocket, WebSocketDisconnect
 
 from .config import NAV_MAX_STEPS
+from .device_manager import set_device_busy, set_device_available
 from .models import TaskStatus
 from .nav_agent import decide_next_action
 from .tasks import NavigationTask
@@ -59,6 +60,7 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
     """
     await websocket.accept()
     task.status = TaskStatus.RUNNING
+    set_device_busy(task.task_id)
     logger.info(f"[WS] Устройство подключено к задаче {task.task_id}")
 
     try:
@@ -183,6 +185,8 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
         logger.error(f"[WS] Задача {task.task_id} упала: {type(e).__name__}: {e}", exc_info=True)
         task.status = TaskStatus.FAILED
         task.result = str(e)
+    finally:
+        set_device_available()
 
 
 async def _handle_input_request(

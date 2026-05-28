@@ -226,36 +226,70 @@ def _find_clickable_container(
     return best
 
 
+def _find_element_by_desc(desc: str, elements: list[dict]) -> dict | None:
+    """Ищет элемент по desc/text — сначала точное совпадение, потом подстрока."""
+    desc_lower = desc.lower()
+    for el in elements:
+        el_label = (el.get("desc") or el.get("text", "")).lower()
+        if el_label and el_label == desc_lower:
+            return el
+    for el in elements:
+        el_label = (el.get("desc") or el.get("text", "")).lower()
+        if el_label and desc_lower in el_label:
+            return el
+    return None
+
+
 def _resolve_element_ref(action: dict, elements: list[dict]) -> dict:
     """
-    Резолвит ссылку #N в реальные данные элемента.
+    Резолвит ссылку на элемент в реальные id/desc/bounds.
 
-    LLM использует индексы (#0, #1, ...) из списка элементов.
-    Эта функция:
-    1. Находит элемент по индексу
-    2. Если элемент не clickable — находит ближайший clickable-контейнер
-    3. Собирает id/desc/bounds для Android
+    Стратегия поиска:
+    1. По индексу #N / N из списка elements
+    2. Fallback: по desc/text (если индекс невалидный)
+    3. Если элемент не clickable — подбирает clickable-контейнер
     """
     node_id = action.get("node_id", "")
+    desc = action.get("desc", "")
+    el = None
 
     if node_id.startswith("#"):
         idx_str = node_id[1:]
     elif node_id.isdigit():
         idx_str = node_id
     else:
-        return action
+        idx_str = None
 
-    try:
-        idx = int(idx_str)
-    except (ValueError, IndexError):
-        logger.warning(f"[NAV] Cannot parse element ref: {node_id}")
-        return action
+    if idx_str is not None:
+        try:
+            idx = int(idx_str)
+            if 0 <= idx < len(elements):
+                el = elements[idx]
+            else:
+                logger.warning(
+                    f"[NAV] Element ref {node_id} out of range "
+                    f"(0..{len(elements) - 1}), trying desc fallback"
+                )
+        except ValueError:
+            logger.warning(f"[NAV] Cannot parse element ref: {node_id}")
 
-    if idx < 0 or idx >= len(elements):
-        logger.warning(f"[NAV] Element ref {node_id} out of range (0..{len(elements) - 1})")
-        return action
+    if el is None and desc:
+        el = _find_element_by_desc(desc, elements)
+        if el:
+            logger.info(f"[NAV] Fallback: found element by desc={desc!r}")
 
-    el = elements[idx]
+    if el is None:
+        if node_id and not idx_str:
+            el = _find_element_by_desc(node_id, elements)
+            if el:
+                logger.info(f"[NAV] Fallback: found element by node_id as text={node_id!r}")
+
+    if el is None:
+        logger.warning(
+            f"[NAV] Cannot resolve: node_id={node_id!r}, desc={desc!r} "
+            f"— returning action unchanged"
+        )
+        return action
 
     if action.get("action") == "click" and not el.get("clickable"):
         container = _find_clickable_container(el, elements)

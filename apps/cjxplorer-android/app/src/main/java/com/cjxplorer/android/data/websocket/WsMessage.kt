@@ -37,6 +37,7 @@ data class WsIncomingMessage(
     val action: String? = null,
     @SerialName("node_id") val nodeId: String? = null,
     val desc: String? = null,
+    val bounds: WsBounds? = null,
     val direction: String? = null,
     val text: String? = null,
     val value: String? = null,

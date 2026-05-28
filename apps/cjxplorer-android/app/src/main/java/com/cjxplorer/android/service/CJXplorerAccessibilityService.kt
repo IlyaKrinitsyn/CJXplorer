@@ -1,6 +1,8 @@
 package com.cjxplorer.android.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
 import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
@@ -30,45 +32,67 @@ class CJXplorerAccessibilityService : AccessibilityService() {
     }
 
     fun performAction(action: NavigationAction): Boolean = when (action) {
-        is NavigationAction.Click -> findAndClick(action.nodeId, action.desc)
+        is NavigationAction.Click -> findAndClick(action)
         is NavigationAction.Scroll -> performScroll(action.direction)
         is NavigationAction.TypeText -> findAndType(action.nodeId, action.text)
         is NavigationAction.Back -> performGlobalAction(GLOBAL_ACTION_BACK)
         else -> false
     }
 
-    private fun findAndClick(nodeId: String, desc: String? = null): Boolean {
-        val root = rootInActiveWindow ?: return false
-        val candidates = root.findAccessibilityNodeInfosByViewId(nodeId)
+    private fun findAndClick(click: NavigationAction.Click): Boolean {
+        val root = rootInActiveWindow
+        val nodeId = click.nodeId
+        val desc = click.desc
 
-        if (candidates.isNullOrEmpty()) {
-            Log.w(TAG, "findAndClick: no nodes found for id=$nodeId")
-            if (!desc.isNullOrEmpty()) {
-                val byDesc = findNodeByDescription(root, desc)
-                if (byDesc != null) {
-                    Log.i(TAG, "findAndClick: found by desc='$desc' (fallback)")
-                    return byDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        // 1. По viewIdResourceName
+        if (nodeId.isNotEmpty() && root != null) {
+            val candidates = root.findAccessibilityNodeInfosByViewId(nodeId)
+            if (!candidates.isNullOrEmpty()) {
+                if (candidates.size == 1 || desc.isNullOrEmpty()) {
+                    Log.i(TAG, "click: by id=$nodeId (${candidates.size} found)")
+                    return candidates.first().performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 }
+                val match = candidates.firstOrNull { node ->
+                    node.contentDescription?.toString()?.contains(desc, ignoreCase = true) == true ||
+                        node.text?.toString()?.contains(desc, ignoreCase = true) == true
+                }
+                if (match != null) {
+                    Log.i(TAG, "click: by id=$nodeId + desc='$desc'")
+                    return match.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                }
+                Log.i(TAG, "click: by id=$nodeId (desc='$desc' not matched, using first)")
+                return candidates.first().performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }
-            return false
         }
 
-        if (candidates.size == 1 || desc.isNullOrEmpty()) {
-            Log.i(TAG, "findAndClick: clicking first of ${candidates.size} for id=$nodeId")
-            return candidates.first().performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        // 2. По contentDescription / text
+        if (!desc.isNullOrEmpty() && root != null) {
+            val byDesc = findNodeByDescription(root, desc)
+            if (byDesc != null) {
+                Log.i(TAG, "click: by desc='$desc'")
+                return byDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            }
         }
 
-        val match = candidates.firstOrNull { node ->
-            node.contentDescription?.toString()?.contains(desc, ignoreCase = true) == true ||
-                node.text?.toString()?.contains(desc, ignoreCase = true) == true
-        }
-        if (match != null) {
-            Log.i(TAG, "findAndClick: matched desc='$desc' among ${candidates.size} candidates")
-            return match.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        // 3. По координатам (bounds) — последний fallback
+        if (click.boundsLeft != null && click.boundsTop != null &&
+            click.boundsRight != null && click.boundsBottom != null
+        ) {
+            val centerX = (click.boundsLeft + click.boundsRight) / 2f
+            val centerY = (click.boundsTop + click.boundsBottom) / 2f
+            Log.i(TAG, "click: by bounds tap at ($centerX, $centerY)")
+            return tapAt(centerX, centerY)
         }
 
-        Log.w(TAG, "findAndClick: desc='$desc' not matched, clicking first of ${candidates.size}")
-        return candidates.first().performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        Log.e(TAG, "click: all strategies failed for id=$nodeId, desc=$desc")
+        return false
+    }
+
+    private fun tapAt(x: Float, y: Float): Boolean {
+        val path = Path().apply { moveTo(x, y) }
+        val stroke = GestureDescription.StrokeDescription(path, 0, 100)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        return dispatchGesture(gesture, null, null)
     }
 
     private fun findNodeByDescription(

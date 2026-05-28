@@ -194,6 +194,46 @@ def _parse_llm_response(text: str) -> dict | None:
     return None
 
 
+def _resolve_element_ref(action: dict, elements: list[dict]) -> dict:
+    """
+    Резолвит ссылку #N в реальные данные элемента.
+
+    LLM использует индексы (#0, #1, ...) из списка элементов.
+    Эта функция заменяет их на реальные id/desc/bounds,
+    которые Android может использовать для клика.
+    """
+    node_id = action.get("node_id", "")
+
+    if not node_id.startswith("#"):
+        return action
+
+    try:
+        idx = int(node_id[1:])
+    except (ValueError, IndexError):
+        logger.warning(f"[NAV] Cannot parse element ref: {node_id}")
+        return action
+
+    if idx < 0 or idx >= len(elements):
+        logger.warning(f"[NAV] Element ref {node_id} out of range (0..{len(elements) - 1})")
+        return action
+
+    el = elements[idx]
+    resolved = dict(action)
+    resolved["node_id"] = el.get("id", "")
+    if el.get("desc"):
+        resolved["desc"] = el["desc"]
+    elif el.get("text"):
+        resolved["desc"] = el["text"]
+    if el.get("bounds"):
+        resolved["bounds"] = el["bounds"]
+
+    logger.info(
+        f"[NAV] Resolved {node_id} → id={resolved.get('node_id')!r}, "
+        f"desc={resolved.get('desc')!r}, bounds={resolved.get('bounds')}"
+    )
+    return resolved
+
+
 async def decide_next_action(
     screenshot_b64: str,
     nodes: list[dict],
@@ -205,22 +245,7 @@ async def decide_next_action(
     """
     Определяет следующее действие на основе состояния экрана.
 
-    Args:
-        screenshot_b64: Скриншот экрана в base64.
-        nodes: Дерево нод AccessibilityService.
-        task_description: Описание задачи (приложение + CJ).
-        step: Текущий номер шага.
-        model: Идентификатор LLM-модели.
-        action_history: История предыдущих действий (последние N шагов).
-
-    Returns:
-        Словарь с действием, например:
-        {"action": "click", "node_id": "..."}
-        {"action": "scroll", "direction": "down"}
-        {"action": "type", "node_id": "...", "text": "..."}
-        {"action": "back"}
-        {"action": "input_needed", "node_id": "...", "prompt": "Введите логин"}
-        {"action": "done"}
+    Резолвит ссылки #N из LLM-ответа в реальные id/desc/bounds элементов.
     """
     total_raw = _count_nodes(nodes)
     elements = _flatten_nodes(nodes)
@@ -297,6 +322,8 @@ async def decide_next_action(
 
             parsed = _parse_llm_response(raw)
             if parsed:
+                if parsed.get("action") in ("click", "type", "input_needed"):
+                    parsed = _resolve_element_ref(parsed, elements)
                 logger.info(f"[NAV] Step {step}: parsed action={parsed.get('action')}")
                 return parsed
 

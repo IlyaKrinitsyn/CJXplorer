@@ -19,7 +19,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from .config import NAV_MAX_STEPS
 from .device_manager import set_device_busy, set_device_available
 from .models import TaskStatus
-from .nav_agent import decide_next_action
+from .nav_agent import decide_next_action, decompose_task
 from .tasks import NavigationTask
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,8 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
             task_text = f"Открой приложение {task.app_name} и выполни: {task.journey_description}"
         else:
             task_text = task.journey_description
+
+        task.goals = await decompose_task(task_text, task.model)
 
         start_msg = {"type": "start", "task": task_text}
         logger.info(f"[WS→device] Отправка start: {json.dumps(start_msg, ensure_ascii=False)[:300]}")
@@ -119,6 +121,7 @@ async def handle_navigation_session(websocket: WebSocket, task: NavigationTask) 
                     step=task.current_step,
                     model=task.model,
                     action_history=task.action_history,
+                    goals=task.goals,
                 )
             except Exception as e:
                 logger.error(

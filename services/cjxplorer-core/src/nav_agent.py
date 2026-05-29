@@ -13,7 +13,8 @@ import time
 from openai import AsyncOpenAI
 
 from .config import LLM_API_KEY, LLM_BASE_URL
-from .nav_prompts import NAV_SYSTEM_PROMPT, NAV_USER_TEMPLATE
+from .prompts.goal_prompts import GOAL_DECOMPOSE_SYSTEM, GOAL_DECOMPOSE_USER
+from .prompts.nav_prompts import NAV_SYSTEM_PROMPT, NAV_USER_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -105,29 +106,45 @@ def _format_elements_for_prompt(elements: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _get_phase_hint(action_history: list[dict], step: int) -> str:
-    """Определяет фазу навигации и возвращает подсказку для промпта."""
-    if step <= 1:
-        return "ФАЗА: Найди и открой целевое приложение. Если видишь его иконку — КЛИКНИ по ней.\n"
+def _get_goal_context(goals: list[dict], action_history: list[dict], step: int) -> str:
+    """Формирует контекст подцелей для промпта навигации."""
+    if not goals:
+        if step <= 1:
+            return "ФАЗА: Найди и открой целевое приложение. Если видишь его иконку — КЛИКНИ по ней.\n"
+        has_click = any(a.get("action") == "click" for a in action_history)
+        if has_click:
+            return "ФАЗА: Приложение открыто. Выполняй шаги клиентского пути.\n"
+        return ""
 
-    has_click = any(a.get("action") == "click" for a in action_history)
-    only_scrolls = all(
-        a.get("action") in ("scroll", "back") for a in action_history
-    )
+    lines = ["ПЛАН ПОДЦЕЛЕЙ (ориентир, реальные шаги могут отличаться):"]
+    for g in goals:
+        step_num = g.get("step", "?")
+        action = g.get("action", "?")
+        done_when = g.get("done_when", "?")
+        lines.append(f"  {step_num}. {action} → завершено когда: {done_when}")
 
-    if only_scrolls:
-        scroll_count = sum(1 for a in action_history if a.get("action") == "scroll")
-        if scroll_count >= 3:
-            return (
-                "ФАЗА: Приложение не найдено после нескольких скроллов. "
-                "Если не видишь его — ответь done.\n"
-            )
-        return "ФАЗА: Ищем приложение. Если видишь его иконку — КЛИКНИ, не скролль мимо!\n"
+    completed = _estimate_completed_goals(goals, action_history)
+    total = len(goals)
+    lines.append(f"\nПрогресс: ~{completed} из {total} подцелей выполнено.")
 
-    if has_click:
-        return "ФАЗА: Приложение открыто. Выполняй шаги клиентского пути.\n"
+    if completed < total:
+        current = goals[min(completed, total - 1)]
+        lines.append(f"Текущая подцель: {current.get('action', '?')}")
 
-    return ""
+    return "\n".join(lines) + "\n"
+
+
+def _estimate_completed_goals(goals: list[dict], action_history: list[dict]) -> int:
+    """
+    Эвристическая оценка количества выполненных подцелей.
+    Считает по количеству успешных кликов (грубая, но достаточная оценка).
+    """
+    clicks = sum(1 for a in action_history if a.get("action") == "click")
+    total = len(goals)
+    if total <= 1:
+        return 0
+    estimated = min(clicks, total - 1)
+    return estimated
 
 
 def _format_action_history(action_history: list[dict]) -> str:
@@ -322,6 +339,93 @@ def _resolve_element_ref(action: dict, elements: list[dict]) -> dict:
     return resolved
 
 
+async def decompose_task(task_description: str, model: str) -> list[dict]:
+    """
+    Разбивает задачу навигации на подцели с критериями завершения.
+
+    Вызывается один раз перед началом навигации. Результат кешируется в task.goals.
+    При ошибке возвращает пустой список (graceful degradation).
+    """
+    user_text = GOAL_DECOMPOSE_USER.format(task_description=task_description)
+
+    logger.info(f"[GOALS] Декомпозиция задачи: {task_description!r}")
+    t0 = time.monotonic()
+
+    try:
+        response = await _client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": GOAL_DECOMPOSE_SYSTEM},
+                {"role": "user", "content": user_text},
+            ],
+            max_tokens=1024,
+        )
+
+        raw = response.choices[0].message.content
+        elapsed = time.monotonic() - t0
+        logger.info(f"[GOALS] LLM ответил за {elapsed:.1f}s: {raw[:500] if raw else 'EMPTY'}")
+
+        if not raw:
+            return []
+
+        parsed = _parse_llm_response(raw)
+        if not parsed:
+            parsed = _parse_json_permissive(raw)
+
+        if parsed and "goals" in parsed:
+            goals = parsed["goals"]
+            final_signal = parsed.get("final_done_signal", "")
+            logger.info(
+                f"[GOALS] Декомпозиция: {len(goals)} подцелей, "
+                f"final_signal={final_signal!r}"
+            )
+            for g in goals:
+                logger.info(f"[GOALS]   #{g.get('step')}: {g.get('action')} → {g.get('done_when')}")
+            return goals
+
+        logger.warning(f"[GOALS] Не удалось распарсить декомпозицию: {raw[:300]}")
+        return []
+
+    except Exception as e:
+        elapsed = time.monotonic() - t0
+        logger.error(
+            f"[GOALS] Ошибка декомпозиции ({elapsed:.1f}s): {type(e).__name__}: {e}"
+        )
+        return []
+
+
+def _parse_json_permissive(text: str) -> dict | None:
+    """Пытается извлечь JSON из текста с markdown-обёрткой или мусором."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        json_lines = []
+        inside = False
+        for line in lines:
+            if line.strip().startswith("```") and not inside:
+                inside = True
+                continue
+            if line.strip() == "```" and inside:
+                break
+            if inside:
+                json_lines.append(line)
+        text = "\n".join(json_lines).strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
 async def decide_next_action(
     screenshot_b64: str,
     nodes: list[dict],
@@ -329,6 +433,7 @@ async def decide_next_action(
     step: int,
     model: str,
     action_history: list[dict] | None = None,
+    goals: list[dict] | None = None,
 ) -> dict:
     """
     Определяет следующее действие на основе состояния экрана.
@@ -348,12 +453,12 @@ async def decide_next_action(
 
     history = action_history or []
     history_text = _format_action_history(history)
-    phase_hint = _get_phase_hint(history, step)
+    goals_context = _get_goal_context(goals or [], history, step)
 
     user_text = NAV_USER_TEMPLATE.format(
         task_description=task_description,
         step=step,
-        phase_hint=phase_hint,
+        goals_context=goals_context,
         action_history=history_text,
         elements=elements_text,
     )

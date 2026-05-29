@@ -9,8 +9,8 @@ import base64
 from openai import AsyncOpenAI
 
 from .config import LLM_API_KEY, LLM_BASE_URL
-from .improve_prompts import IMPROVE_PROMPT
-from .prompts import SYSTEM_PROMPT
+from .prompts.eval_prompts import SYSTEM_PROMPT
+from .prompts.improve_prompts import IMPROVE_PROMPT
 from .utils import pluralize
 
 client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)

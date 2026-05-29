@@ -28,6 +28,7 @@ class NavigationTask:
         self.screenshots: list[bytes] = []
         self.result: str | None = None
         self.action_history: list[dict] = []
+        self.goals: list[dict] = []
         self.input_prompt: str | None = None
         self.input_event: asyncio.Event = asyncio.Event()
         self.input_value: str | None = None

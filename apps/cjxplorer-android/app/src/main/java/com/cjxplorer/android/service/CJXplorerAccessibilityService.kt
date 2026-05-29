@@ -27,8 +27,18 @@ class CJXplorerAccessibilityService : AccessibilityService() {
     }
 
     fun getNodeTree(): AccessibilityNode? {
-        val root = rootInActiveWindow ?: return null
-        return AccessibilityNodeParser.parse(root)
+        for (attempt in 1..ROOT_RETRY_COUNT) {
+            val root = rootInActiveWindow
+            if (root != null) {
+                return AccessibilityNodeParser.parse(root)
+            }
+            if (attempt < ROOT_RETRY_COUNT) {
+                Log.w(TAG, "rootInActiveWindow is null (attempt $attempt/$ROOT_RETRY_COUNT), retrying...")
+                Thread.sleep(ROOT_RETRY_DELAY_MS)
+            }
+        }
+        Log.e(TAG, "rootInActiveWindow is null after $ROOT_RETRY_COUNT attempts")
+        return null
     }
 
     fun performAction(action: NavigationAction): Boolean = when (action) {
@@ -50,7 +60,7 @@ class CJXplorerAccessibilityService : AccessibilityService() {
             if (!candidates.isNullOrEmpty()) {
                 if (candidates.size == 1 || desc.isNullOrEmpty()) {
                     Log.i(TAG, "click: by id=$nodeId (${candidates.size} found)")
-                    return candidates.first().performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    return scrollToAndClick(candidates.first())
                 }
                 val match = candidates.firstOrNull { node ->
                     node.contentDescription?.toString()?.contains(desc, ignoreCase = true) == true ||
@@ -58,29 +68,35 @@ class CJXplorerAccessibilityService : AccessibilityService() {
                 }
                 if (match != null) {
                     Log.i(TAG, "click: by id=$nodeId + desc='$desc'")
-                    return match.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    return scrollToAndClick(match)
                 }
                 Log.i(TAG, "click: by id=$nodeId (desc='$desc' not matched, using first)")
-                return candidates.first().performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                return scrollToAndClick(candidates.first())
             }
         }
 
-        // 2. По координатам (bounds) — надёжный вариант, координаты всегда уникальны
+        // 2. По координатам (bounds) — только если элемент на экране
         if (click.boundsLeft != null && click.boundsTop != null &&
             click.boundsRight != null && click.boundsBottom != null
         ) {
             val centerX = (click.boundsLeft + click.boundsRight) / 2f
             val centerY = (click.boundsTop + click.boundsBottom) / 2f
-            Log.i(TAG, "click: by bounds tap at ($centerX, $centerY)")
-            return tapAt(centerX, centerY)
+            if (centerX > 0 && centerY > 0 &&
+                click.boundsRight > click.boundsLeft &&
+                click.boundsBottom > click.boundsTop
+            ) {
+                Log.i(TAG, "click: by bounds tap at ($centerX, $centerY)")
+                return tapAt(centerX, centerY)
+            }
+            Log.w(TAG, "click: bounds off-screen (center=$centerX,$centerY), skipping tap")
         }
 
-        // 3. По contentDescription / text — когда bounds не доступны
+        // 3. По contentDescription / text — с автоскроллом до элемента
         if (!desc.isNullOrEmpty() && root != null) {
             val byDesc = findNodeByDescription(root, desc)
             if (byDesc != null) {
-                Log.i(TAG, "click: by desc='$desc'")
-                return byDesc.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                Log.i(TAG, "click: by desc='$desc', visible=${byDesc.isVisibleToUser}")
+                return scrollToAndClick(byDesc)
             }
         }
 
@@ -88,7 +104,53 @@ class CJXplorerAccessibilityService : AccessibilityService() {
         return false
     }
 
+    @Suppress("DEPRECATION")
+    private fun scrollToAndClick(node: AccessibilityNodeInfo): Boolean {
+        if (!node.isVisibleToUser) {
+            Log.i(TAG, "scrollToAndClick: element not visible, scrolling into view...")
+            node.performAction(
+                AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id
+            )
+            Thread.sleep(SCROLL_SETTLE_MS)
+        }
+
+        if (node.isClickable) {
+            return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        }
+
+        val clickableParent = findClickableParent(node)
+        if (clickableParent != null) {
+            Log.i(TAG, "scrollToAndClick: using clickable parent")
+            return clickableParent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        }
+
+        val bounds = android.graphics.Rect()
+        node.getBoundsInScreen(bounds)
+        val cx = (bounds.left + bounds.right) / 2f
+        val cy = (bounds.top + bounds.bottom) / 2f
+        if (cx > 0 && cy > 0) {
+            Log.i(TAG, "scrollToAndClick: tapping at ($cx, $cy)")
+            return tapAt(cx, cy)
+        }
+
+        Log.e(TAG, "scrollToAndClick: failed, bounds=($bounds)")
+        return false
+    }
+
+    private fun findClickableParent(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var current = node.parent
+        while (current != null) {
+            if (current.isClickable) return current
+            current = current.parent
+        }
+        return null
+    }
+
     private fun tapAt(x: Float, y: Float): Boolean {
+        if (x < 0 || y < 0) {
+            Log.e(TAG, "tapAt: invalid coordinates ($x, $y)")
+            return false
+        }
         val path = Path().apply { moveTo(x, y) }
         val stroke = GestureDescription.StrokeDescription(path, 0, 100)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
@@ -102,7 +164,7 @@ class CJXplorerAccessibilityService : AccessibilityService() {
         val nodeDesc = node.contentDescription?.toString().orEmpty()
         val nodeText = node.text?.toString().orEmpty()
         if (nodeDesc.contains(desc, ignoreCase = true) || nodeText.contains(desc, ignoreCase = true)) {
-            if (node.isClickable) return node
+            return node
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
@@ -150,6 +212,9 @@ class CJXplorerAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "CJXplorerA11y"
+        private const val SCROLL_SETTLE_MS = 600L
+        private const val ROOT_RETRY_COUNT = 5
+        private const val ROOT_RETRY_DELAY_MS = 500L
         var instance: CJXplorerAccessibilityService? = null
             private set
     }

@@ -261,9 +261,9 @@ class CJXplorerNavigationService : Service() {
         private const val TAG = "CJXplorerNavService"
         private const val CHANNEL_ID = "cjxplorer_navigation"
         private const val NOTIFICATION_ID = 1
-        private const val HOME_SETTLE_DELAY_MS = 1000L
+        private const val HOME_SETTLE_DELAY_MS = 2000L
         private const val INITIAL_DELAY_MS = 1000L
-        private const val ACTION_SETTLE_DELAY_MS = 800L
+        private const val ACTION_SETTLE_DELAY_MS = 1000L
 
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning

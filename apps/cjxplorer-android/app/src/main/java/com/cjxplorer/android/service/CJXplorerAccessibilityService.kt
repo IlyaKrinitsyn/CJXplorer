@@ -183,15 +183,54 @@ class CJXplorerAccessibilityService : AccessibilityService() {
         return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
     }
 
-    private fun performScroll(direction: ScrollDirection): Boolean {
+    fun scrollForCapture(direction: ScrollDirection, screenWidth: Int, screenHeight: Int): Boolean {
         val scrollAction = when (direction) {
             ScrollDirection.DOWN, ScrollDirection.RIGHT ->
                 AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
             ScrollDirection.UP, ScrollDirection.LEFT ->
                 AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
         }
-        val scrollable = findScrollableNode(rootInActiveWindow) ?: return false
-        return scrollable.performAction(scrollAction)
+        val scrollable = findScrollableNode(rootInActiveWindow)
+        if (scrollable?.performAction(scrollAction) == true) {
+            Log.i(TAG, "scrollForCapture: by a11y action $direction")
+            return true
+        }
+        val byGesture = swipeScroll(direction, screenWidth, screenHeight)
+        if (byGesture) Log.i(TAG, "scrollForCapture: by gesture $direction")
+        return byGesture
+    }
+
+    private fun swipeScroll(direction: ScrollDirection, screenWidth: Int, screenHeight: Int): Boolean {
+        val cx = screenWidth / 2f
+        val cy = screenHeight / 2f
+        val path = Path()
+        when (direction) {
+            ScrollDirection.DOWN -> {
+                path.moveTo(cx, screenHeight * 0.75f)
+                path.lineTo(cx, screenHeight * 0.25f)
+            }
+            ScrollDirection.UP -> {
+                path.moveTo(cx, screenHeight * 0.25f)
+                path.lineTo(cx, screenHeight * 0.75f)
+            }
+            ScrollDirection.RIGHT -> {
+                path.moveTo(screenWidth * 0.75f, cy)
+                path.lineTo(screenWidth * 0.25f, cy)
+            }
+            ScrollDirection.LEFT -> {
+                path.moveTo(screenWidth * 0.25f, cy)
+                path.lineTo(screenWidth * 0.75f, cy)
+            }
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0, 350)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        return dispatchGesture(gesture, null, null)
+    }
+
+    private fun performScroll(direction: ScrollDirection): Boolean {
+        if (rootInActiveWindow == null) return false
+        val dm = resources.displayMetrics
+        return scrollForCapture(direction, dm.widthPixels, dm.heightPixels)
     }
 
     private fun findNodeById(id: String): AccessibilityNodeInfo? {

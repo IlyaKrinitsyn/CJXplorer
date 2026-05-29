@@ -43,10 +43,20 @@ class CJXplorerScreenCapture(private val context: Context) {
 
     /**
      * Захватывает один кадр экрана и возвращает JPEG base64.
-     * Создаёт VirtualDisplay, дожидается кадра через OnImageAvailableListener,
-     * а затем сразу освобождает VirtualDisplay — MediaProjection остаётся живой.
      */
-    suspend fun capture(width: Int, height: Int, densityDpi: Int): String =
+    suspend fun capture(width: Int, height: Int, densityDpi: Int): String {
+        val bitmap = captureBitmap(width, height, densityDpi)
+        return try {
+            bitmapToBase64(bitmap)
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    /**
+     * Захватывает один кадр как [Bitmap] (вызывающий код должен recycle).
+     */
+    suspend fun captureBitmap(width: Int, height: Int, densityDpi: Int): Bitmap =
         suspendCancellableCoroutine { cont ->
             val projection = mediaProjection
             if (projection == null) {
@@ -90,16 +100,13 @@ class CJXplorerScreenCapture(private val context: Context) {
                             bitmap
                         }
 
-                        val base64 = bitmapToBase64(cropped)
-                        cropped.recycle()
-
                         display.release()
                         virtualDisplay = null
                         reader.setOnImageAvailableListener(null, null)
                         reader.close()
                         imageReader = null
 
-                        if (cont.isActive) cont.resume(base64)
+                        if (cont.isActive) cont.resume(cropped)
                     } catch (e: Exception) {
                         Log.e(TAG, "Error capturing image", e)
                         if (cont.isActive) cont.resumeWithException(e)

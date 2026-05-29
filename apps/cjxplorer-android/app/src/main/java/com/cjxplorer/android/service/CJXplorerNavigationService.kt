@@ -190,7 +190,18 @@ class CJXplorerNavigationService : Service() {
             }
 
             val capture = screenCapture
-            val screenshot = if (capture?.isReady == true) {
+            val screenshot = if (capture?.isReady == true && a11y != null) {
+                val dm = getDisplayMetrics()
+                val w = dm.widthPixels
+                val h = dm.heightPixels
+                val axis = ScrollScreenCapture.detectStitchAxis(nodeTree, w, h)
+                if (axis != ScrollScreenCapture.StitchAxis.NONE) {
+                    Log.i(TAG, "Using stitched capture: axis=$axis")
+                    ScrollScreenCapture.capture(capture, a11y, w, h, dm.densityDpi, axis)
+                } else {
+                    capture.capture(w, h, dm.densityDpi)
+                }
+            } else if (capture?.isReady == true) {
                 val dm = getDisplayMetrics()
                 capture.capture(dm.widthPixels, dm.heightPixels, dm.densityDpi)
             } else {
